@@ -1,0 +1,53 @@
+name: gmail
+version: 0.1.0
+description: >-
+  Read, search and summarize Gmail; flag bills, receipts, travel, packages and deadlines;
+  optionally write draft replies (never sends).
+entrypoint: plugin:GmailPlugin
+capabilities: [data_source, tools]
+sync_interval: 300        # polling fallback; Pub/Sub push triggers an immediate sync
+webhook: true
+permissions:
+  network: [gmail.googleapis.com]
+  data_write: [message]
+oauth:
+  provider: google
+  scopes:
+    - https://www.googleapis.com/auth/gmail.readonly
+  optional_scopes:
+    # Google has no drafts-only scope: gmail.compose also permits sending, but this plugin
+    # only ever calls drafts.create.
+    enable_drafts:
+      - https://www.googleapis.com/auth/gmail.compose
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    initial_days:
+      type: integer
+      title: Days of mail to import on first sync
+      default: 14
+      minimum: 1
+      maximum: 365
+    max_initial_messages:
+      type: integer
+      title: Maximum messages on first sync
+      default: 200
+      minimum: 1
+      maximum: 2000
+    skip_labels:
+      type: array
+      title: Labels to skip
+      description: Messages with any of these labels are not imported.
+      items: {type: string}
+      default: [SPAM, TRASH, DRAFT, CATEGORY_PROMOTIONS, CATEGORY_SOCIAL]
+    enable_drafts:
+      type: boolean
+      title: Allow creating drafts
+      description: Requests the gmail.compose scope. Reconnect the account after changing.
+      default: false
+    pubsub_topic:
+      type: string
+      title: Pub/Sub topic for push (optional)
+      description: e.g. projects/my-project/topics/gmail-push. Leave empty to poll.
+      default: ""

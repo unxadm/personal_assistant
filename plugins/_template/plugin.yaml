@@ -1,0 +1,34 @@
+# Copy this directory to plugins/<your_name>/ (no leading underscore) and edit.
+# Directories starting with "_" are ignored by the loader.
+name: my_plugin            # lowercase letters, digits, underscores
+version: 0.1.0
+description: One sentence shown in the plugin manager.
+entrypoint: plugin:MyPlugin   # <file without .py>:<class>
+
+# What the plugin does. Remove what you don't need.
+#   data_source  -> sync() is called every sync_interval seconds
+#   tools        -> @tool methods are offered to the LLM
+#   triggers     -> may call ctx.emit() to notify the proactive engine
+capabilities: [data_source, tools, triggers]
+sync_interval: 900         # seconds (minimum 30); omit for on-demand only
+webhook: false             # true = accept POSTs at /api/plugins/<name>/webhook
+
+# Everything not listed here is denied.
+permissions:
+  network: [api.example.com]     # hosts ctx.http may call ("*.example.com" allowed)
+  data_write: [item]             # item types ctx.upsert_items may write
+  data_read: false               # read other plugins' items
+  notify: false
+
+# Secrets are entered in the plugin manager, stored encrypted, read with ctx.secret().
+secrets: [api_token]
+
+# JSON Schema for user-editable settings; rendered as a form. Read with ctx.config.
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    greeting:
+      type: string
+      title: Greeting
+      default: Hello

@@ -1,0 +1,34 @@
+name: weather
+version: 0.1.0
+description: Weather forecast from Open-Meteo (free, no API key). Used by the daily briefing.
+entrypoint: plugin:WeatherPlugin
+capabilities: [data_source, tools, triggers]
+sync_interval: 10800
+permissions:
+  network: [api.open-meteo.com]
+  data_write: [item]
+config_schema:
+  type: object
+  additionalProperties: false
+  required: [latitude, longitude]
+  properties:
+    location_name:
+      type: string
+      title: Location name
+      default: Home
+    latitude:
+      type: number
+      title: Latitude
+      minimum: -90
+      maximum: 90
+    longitude:
+      type: number
+      title: Longitude
+      minimum: -180
+      maximum: 180
+    rain_alert_percent:
+      type: integer
+      title: Alert when chance of rain reaches (%)
+      default: 70
+      minimum: 0
+      maximum: 100

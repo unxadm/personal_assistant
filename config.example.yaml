@@ -1,0 +1,147 @@
+# Copy to config.yaml and edit. Every value can also be set with an environment variable:
+# PA_ prefix, "__" between levels — e.g. PA_LLM__CHAT__API_KEY, PA_TIMEZONE.
+# Precedence: defaults < config.yaml < environment < values saved in the Settings page.
+
+timezone: Europe/Oslo        # IANA name; used for "now", reminders, quiet hours, briefing
+data_dir: ./data             # SQLite database and the encryption key live here
+log_level: INFO
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  cookie_secure: false       # set true when served over HTTPS
+  # public_url: https://assistant.example.com   # needed for push (webhooks); OAuth redirect base
+
+llm:
+  # Any OpenAI-compatible endpoint. Other slots inherit base_url/api_key from `chat`
+  # unless they set their own.
+  chat:
+    base_url: https://api.openai.com/v1
+    api_key: ""              # prefer PA_LLM__CHAT__API_KEY in .env
+    model: gpt-4o-mini
+    # temperature: 0.3       # omitted = provider default (some models reject it)
+    # max_tokens: 2000
+    timeout: 60
+    tool_mode: auto          # auto | native | json (JSON-in-prompt for models without tool calling)
+    # fallback:              # used when the chat model keeps failing
+    #   model: gpt-4o
+    #   base_url: https://openrouter.ai/api/v1
+    #   api_key: ""
+
+  embeddings:
+    model: text-embedding-3-small   # leave unset to disable semantic search
+
+  # vision:                  # reads photos/screenshots; leave unset if the chat model can see images
+  #   model: gpt-4o
+  # stt:                     # speech-to-text (/audio/transcriptions): Speak button, Telegram voice notes
+  #   model: whisper-1
+  #   language: en           # optional hint; unset = auto-detect
+  #   base_url: http://localhost:8000/v1   # e.g. a local Whisper server (see README)
+  # tts:                     # text-to-speech (/audio/speech): Listen button on replies
+  #   model: tts-1
+  #   voice: alloy
+  #   format: mp3            # mp3 | opus | aac | flac | wav
+
+  max_retries: 3             # per model, on timeouts / 429 / 5xx
+  backoff_base: 0.5          # seconds; doubles each retry, with jitter
+  backoff_max: 8
+
+agent:
+  name: Assistant
+  max_tool_iterations: 6
+  history_window: 20         # recent messages sent verbatim
+  summarize_after: 40        # fold older messages into a summary past this many
+  rag_top_k: 5
+  rag_max_distance: 0.7      # cosine distance cut-off for retrieved context
+
+# OAuth client for the Google plugins (see README "Google Cloud setup").
+# Prefer PA_OAUTH__GOOGLE__CLIENT_ID / PA_OAUTH__GOOGLE__CLIENT_SECRET in .env.
+oauth:
+  google:
+    client_id: ""
+    client_secret: ""
+
+# Data matching these rules is never stored, embedded, or shown to the LLM.
+# Also editable in Settings.
+privacy:
+  exclude_senders: []        # addresses or domains: ["boss@example.com", "bank.example"]
+  exclude_labels: []         # Gmail label names: ["Private"]
+  exclude_calendars: []      # calendar ids
+
+plugins:
+  dirs: [./plugins]          # third-party plugin folders (built-ins are always available)
+  auto_sync: true            # poll data sources on their sync_interval
+  call_timeout: 30           # seconds for a tool call / setup / webhook
+  sync_timeout: 300
+  max_failures: 5            # consecutive failures before a plugin is shut off
+
+# Where reminders and briefings are delivered. All of this is also editable in Settings.
+notifications:
+  default_channels: [web_push, telegram]   # used for categories not listed below
+  categories: {}             # e.g. {reminder: [telegram, web_push], briefing: [email]}
+  default_snooze_minutes: 60
+  quiet_hours:               # everything except urgency "high" waits until they end
+    enabled: false
+    start: "22:00"
+    end: "07:00"
+  web_push:
+    enabled: true            # each browser/phone opts in under Settings
+    # contact: mailto:you@example.com   # sent to the push service; defaults to server.public_url
+  telegram:
+    enabled: false
+    bot_token: ""            # prefer PA_NOTIFICATIONS__TELEGRAM__BOT_TOKEN in .env
+    chat_id: ""              # only this chat is served; send /start to the bot to learn it
+    chat: true               # also accept chat messages there (false = notifications only)
+  email:
+    enabled: false
+    host: ""                 # SMTP server
+    port: 587
+    security: starttls       # starttls | ssl | none
+    username: ""
+    password: ""             # prefer PA_NOTIFICATIONS__EMAIL__PASSWORD in .env
+    from_addr: ""            # defaults to username
+    to: ""
+
+briefing:
+  enabled: false
+  time: "07:30"              # local time; skipped if the server only starts 4+ hours later
+
+proactive:
+  enabled: true
+  # Per kind: off | notify (tell me only) | suggest (wait for approval) | auto (create the
+  # reminder straight away; allowed for bill, deadline, appointment, commitment, travel).
+  # Defaults: mail findings "suggest"; package and calendar warnings "notify".
+  levels: {}
+  #   bill: auto
+  #   package: off
+  min_confidence: 0.5        # below this a finding is dropped
+  notify_confidence: 0.7     # at or above this it is also sent as a notification
+  auto_confidence: 0.8       # needed before "auto" acts without asking
+  max_notifications_per_hour: 3
+  max_notifications_per_day: 10
+  max_llm_calls_per_hour: 30 # emails read by the model in the background
+  lookback_days: 3           # older mail is not analysed
+  lead_hours: 24             # remind this long before a bill or deadline
+  travel_gap_minutes: 15
+  early_before: "08:00"
+  evening_at: "18:00"        # when tomorrow's early meetings are flagged
+  brief_minutes: 30          # meeting brief this long before; 0 = never
+  reply_after_days: 2
+
+uploads:
+  max_image_mb: 10
+  max_audio_mb: 25
+  max_images_per_message: 4
+
+scheduler:
+  enabled: true              # false stops reminders, briefings and Telegram polling
+  tick_seconds: 10           # how often due reminders are checked
+
+# --- Provider examples -------------------------------------------------------------
+# OpenRouter:
+#   chat: {base_url: https://openrouter.ai/api/v1, model: anthropic/claude-sonnet-4.5}
+#   embeddings: {base_url: https://api.openai.com/v1, api_key: "...", model: text-embedding-3-small}
+#
+# Ollama (fully local, no key):
+#   chat: {base_url: http://localhost:11434/v1, model: llama3.1}
+#   embeddings: {model: nomic-embed-text}

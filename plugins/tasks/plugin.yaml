@@ -1,0 +1,16 @@
+name: tasks
+version: 0.1.0
+description: A simple local to-do list the assistant can add to, list and complete.
+entrypoint: plugin:TasksPlugin
+capabilities: [tools, triggers]
+permissions:
+  data_write: [task]
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    keep_completed_days:
+      type: integer
+      title: Days to keep completed tasks
+      default: 30
+      minimum: 0

@@ -1,0 +1,51 @@
+name: google_calendar
+version: 0.1.0
+description: >-
+  Read Google Calendar events, find free time and conflicts, and (optionally) create,
+  update and delete events.
+entrypoint: plugin:GoogleCalendarPlugin
+capabilities: [data_source, tools]
+sync_interval: 600        # polling fallback; push channels trigger an immediate sync
+webhook: true
+permissions:
+  network: [www.googleapis.com]
+  data_write: [event]
+oauth:
+  provider: google
+  scopes:
+    - https://www.googleapis.com/auth/calendar.events.readonly
+  optional_scopes:
+    enable_write:
+      - https://www.googleapis.com/auth/calendar.events
+config_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    calendars:
+      type: array
+      title: Calendar IDs
+      description: "'primary' is your main calendar; others look like an email address."
+      items: {type: string}
+      default: [primary]
+    enable_write:
+      type: boolean
+      title: Allow creating, changing and deleting events
+      description: Requests the calendar.events scope. Reconnect the account after changing.
+      default: false
+    days_back:
+      type: integer
+      title: Days of past events to keep in sync
+      default: 7
+      minimum: 0
+      maximum: 365
+    days_ahead:
+      type: integer
+      title: Days of upcoming events to keep in sync
+      default: 60
+      minimum: 1
+      maximum: 730
+    push:
+      type: boolean
+      title: Use push notifications
+      description: Needs a public HTTPS URL (server.public_url). Otherwise events are polled.
+      default: true

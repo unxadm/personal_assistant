@@ -1,0 +1,45 @@
+# Personal Assistant: one container. Reminders, held notifications and background jobs live
+# in the database, so there is no separate worker or Redis.
+#
+#   cp config.example.yaml config.yaml     # then edit
+#   cp .env.example .env                   # secrets
+#   mkdir -p data
+#   docker compose up -d --build
+#   docker compose logs app | grep "setup code"    # needed once, to set the password
+#
+# With local models as well:   docker compose --profile ollama up -d
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    # Reachable from this machine only. Put a reverse proxy with HTTPS in front before
+    # exposing it (see docs/SECURITY.md), or change to "8000:8000" on a trusted network.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    # Run as the owner of ./data so the database and key stay readable only by you.
+    user: "${PA_UID:-1000}:${PA_GID:-1000}"
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/app/config.yaml:ro
+      - ./plugins:/app/plugins:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional local models. In config.yaml use  base_url: http://ollama:11434/v1
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:
