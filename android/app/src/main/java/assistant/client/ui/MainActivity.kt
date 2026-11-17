@@ -1,0 +1,30 @@
+package assistant.client.ui
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.mutableStateOf
+import assistant.client.notify.Notifications
+
+class MainActivity : ComponentActivity() {
+    /** Which tab a tapped notification asked for; cleared once the UI has switched to it. */
+    private val requestedTab = mutableStateOf<String?>(null)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        if (savedInstanceState == null) requestedTab.value = intent?.getStringExtra(Notifications.EXTRA_TAB)
+        setContent {
+            AssistantTheme {
+                AppRoot(requestedTab = requestedTab.value, onTabShown = { requestedTab.value = null })
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        requestedTab.value = intent.getStringExtra(Notifications.EXTRA_TAB)
+    }
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A self-hosted server is often reached over a LAN or VPN address, sometimes with a
+     private certificate authority, so:
+       - certificate authorities the owner installed on the phone are trusted;
+       - plain HTTP is not blocked here, because Android cannot allow it per host at run
+         time. The app itself refuses http:// URLs unless "Allow unencrypted HTTP" is
+         ticked on the sign-in screen (see data/Urls.kt). -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" tools:ignore="AcceptsUserCertificates" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
