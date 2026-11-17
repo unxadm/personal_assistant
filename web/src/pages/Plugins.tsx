@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, type PluginInfo, type PluginList, type SchemaProperty } from "../api";
+import { api, type McpServer, type PluginInfo, type PluginList, type SchemaProperty } from "../api";
 
 const STATUS: Record<PluginInfo["status"], { label: string; className: string }> = {
   running: { label: "Running", className: "bg-emerald-950 text-emerald-300" },
@@ -24,6 +24,7 @@ export default function Plugins() {
   const [data, setData] = useState<PluginList | null>(null);
   const [error, setError] = useState("");
   const [notice] = useState(oauthNotice);
+  const [mcp, setMcp] = useState<McpServer[]>([]);
 
   const load = () =>
     api
@@ -33,6 +34,7 @@ export default function Plugins() {
 
   useEffect(() => {
     load();
+    api.mcpServers().then((r) => setMcp(r.servers)).catch(() => {});
   }, []);
 
   const replace = (info: PluginInfo) =>
@@ -61,6 +63,7 @@ export default function Plugins() {
         )}
         {error && <p className="text-sm text-red-400">{error}</p>}
         {data?.plugins.map((p) => <PluginCard key={p.name} plugin={p} onChange={replace} />)}
+        {mcp.length > 0 && <McpSection servers={mcp} onChange={setMcp} />}
         {data &&
           Object.entries(data.invalid).map(([path, problem]) => (
             <div key={path} className="card border-red-900">
@@ -381,5 +384,73 @@ function Field({
       />
       {hint}
     </label>
+  );
+}
+
+const MCP_STATUS: Record<McpServer["status"], { label: string; className: string }> = {
+  running: { label: "Connected", className: "bg-emerald-950 text-emerald-300" },
+  connecting: { label: "Connecting", className: "bg-slate-800 text-slate-300" },
+  disabled: { label: "Off", className: "bg-slate-800 text-slate-400" },
+  error: { label: "Not connected", className: "bg-red-950 text-red-300" },
+};
+
+const APPROVAL: Record<string, string> = {
+  never: "runs without asking",
+  when_outside_content: "asks when outside content is involved",
+  always: "asks every time",
+};
+
+function McpSection({ servers, onChange }: { servers: McpServer[]; onChange: (s: McpServer[]) => void }) {
+  const [error, setError] = useState("");
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-lg font-semibold">MCP servers</h2>
+        <p className="text-sm text-slate-400">
+          Extra tools for the assistant. Servers are added in config.yaml; whatever they return is treated as
+          untrusted, and most calls wait for your approval.
+        </p>
+      </div>
+      {error && <p className="text-sm text-red-400">{error}</p>}
+      {servers.map((s) => (
+        <div key={s.name} className="card space-y-2">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-medium">{s.name}</h3>
+                <span className="break-all text-xs text-slate-500">{s.where}</span>
+                <span className={`rounded-full px-2 py-0.5 text-xs ${MCP_STATUS[s.status].className}`}>
+                  {MCP_STATUS[s.status].label}
+                </span>
+              </div>
+              {s.error && <p className="mt-1 text-sm text-red-300">{s.error}</p>}
+            </div>
+            {s.status !== "disabled" && (
+              <button
+                className="btn-ghost shrink-0"
+                onClick={() =>
+                  api
+                    .reconnectMcp(s.name)
+                    .then((r) => onChange(r.servers))
+                    .catch((e: Error) => setError(e.message))
+                }
+              >
+                Reconnect
+              </button>
+            )}
+          </div>
+          {s.tools.length > 0 && (
+            <ul className="space-y-0.5 text-sm">
+              {s.tools.map((t) => (
+                <li key={t.name} className="flex flex-wrap justify-between gap-x-3">
+                  <span className="font-mono text-slate-300">{t.tool}</span>
+                  <span className="text-slate-500">{APPROVAL[t.approval]}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }

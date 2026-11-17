@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 ENV_PREFIX = "PA_"
 # Environment variables with the prefix that are not config paths.
@@ -173,15 +174,24 @@ class WebPushConfig(_Model):
     contact: str | None = None
 
 
+# Settings of the SMTP channel that email used before it went through the Gmail API.
+LEGACY_EMAIL_KEYS = ("host", "port", "security", "username", "password", "from_addr")
+
+
 class EmailConfig(_Model):
+    """Notification email, sent through the Gmail plugin's connected account."""
+
     enabled: bool = False
-    host: str | None = None
-    port: int = 587
-    security: Literal["starttls", "ssl", "none"] = "starttls"
-    username: str | None = None
-    password: str | None = None
-    from_addr: str | None = None
+    # Where to send it; empty means the connected Gmail address itself.
     to: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_smtp_settings(cls, data: Any) -> Any:
+        # An old config.yaml or .env still naming them must not stop the server starting.
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k not in LEGACY_EMAIL_KEYS}
+        return data
 
 
 class TelegramConfig(_Model):
@@ -221,6 +231,9 @@ class NotificationsConfig(_Model):
 class BriefingConfig(_Model):
     enabled: bool = False
     time: str = "07:30"
+    # "detailed": a few hundred words under headings, with tomorrow and suggested priorities.
+    # "short": at most 150 words.
+    detail: Literal["short", "detailed"] = "detailed"
 
     _check = field_validator("time")(_clock)
 
@@ -292,6 +305,66 @@ class ProactiveConfig(_Model):
         return self.levels.get(category) or PROACTIVE_LEVELS.get(category, "off")
 
 
+class MCPServerConfig(_Model):
+    """One MCP server whose tools the assistant may call.
+
+    Give either ``command`` (a local program spoken to over stdin/stdout) or ``url`` (a
+    Streamable HTTP endpoint). Servers can only be added in config.yaml, never from the
+    web UI: a ``command`` is a program run on this machine with this app's permissions.
+    """
+
+    enabled: bool = True
+    command: str | None = None
+    args: list[str] = []
+    # Added to a minimal environment (PATH, HOME, ...). The app's own environment,
+    # which holds its secrets, is not passed on.
+    env: dict[str, str] = {}
+    cwd: str | None = None
+    url: str | None = None
+    # Sent with every request, e.g. {"Authorization": "Bearer ..."}.
+    headers: dict[str, str] = {}
+    # Expose only these tools (empty = all the server offers).
+    only_tools: list[str] = []
+    # By default every tool counts as one that changes things, and each call waits for
+    # your approval in the app. Name the tools that only read:
+    read_only_tools: list[str] = []
+    # ... or tools that change things but may run straight away when nothing from outside
+    # is involved in the conversation (the way the calendar tools do).
+    auto_approve_tools: list[str] = []
+    # Believe the server's own readOnlyHint. A server can lie, so this is off by default.
+    trust_read_only_hints: bool = False
+
+    @model_validator(mode="after")
+    def _one_transport(self) -> MCPServerConfig:
+        if bool(self.command) == bool(self.url):
+            raise ValueError("set either command (local program) or url (HTTP server), not both")
+        if self.url and not self.url.startswith(("http://", "https://")):
+            raise ValueError("url must start with http:// or https://")
+        return self
+
+
+class MCPConfig(_Model):
+    """MCP servers, by name (lowercase letters, digits, underscore). Tools show up to the
+    model as ``mcp_<server>_<tool>``."""
+
+    servers: dict[str, MCPServerConfig] = {}
+    connect_timeout: float = 30.0
+    call_timeout: float = 60.0
+    # More than this from one server is cut off (use only_tools to choose).
+    max_tools_per_server: int = 50
+
+    @field_validator("servers")
+    @classmethod
+    def _names(cls, v: dict[str, MCPServerConfig]) -> dict[str, MCPServerConfig]:
+        for name in v:
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name):
+                raise ValueError(
+                    f"MCP server name {name!r}: use lowercase letters, digits and _, "
+                    "starting with a letter, at most 24 characters"
+                )
+        return v
+
+
 class UploadsConfig(_Model):
     max_image_mb: float = 10.0
     max_audio_mb: float = 25.0
@@ -319,6 +392,7 @@ class AppConfig(_Model):
     oauth: dict[str, OAuthClient] = {}
     privacy: PrivacyConfig = PrivacyConfig()
     plugins: PluginsConfig = PluginsConfig()
+    mcp: MCPConfig = MCPConfig()
     notifications: NotificationsConfig = NotificationsConfig()
     briefing: BriefingConfig = BriefingConfig()
     proactive: ProactiveConfig = ProactiveConfig()

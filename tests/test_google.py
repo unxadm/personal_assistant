@@ -7,6 +7,7 @@ import json
 import time
 from datetime import datetime, timedelta
 from datetime import time as dtime
+from email import message_from_bytes, policy
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ GMAIL = r"https://gmail\.googleapis\.com/gmail/v1/users/me"
 CAL = r"https://www\.googleapis\.com/calendar/v3/calendars/([^/]+)/events"
 READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
 
 def gmail_message(
@@ -68,6 +70,7 @@ class FakeGoogle:
         self.history: list[dict[str, Any]] = []
         self.history_expired = False
         self.drafts: list[dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []
         self.watches: list[dict[str, Any]] = []
         self.events: dict[str, list[dict[str, Any]]] = {"primary": []}
         self.changed: dict[str, list[dict[str, Any]]] = {}
@@ -93,7 +96,9 @@ class FakeGoogle:
                 return {"access_token": self.access_token, "expires_in": 3600}
             return {"access_token": self.access_token, "refresh_token": "rt-1", "expires_in": 3600}
 
-        web.route("GET", GMAIL + "/profile")(api(lambda r, m: {"historyId": "100"}))
+        web.route("GET", GMAIL + "/profile")(api(lambda r, m: {
+            "emailAddress": "me@example.com", "historyId": "100",
+        }))
         web.route("GET", GMAIL + "/labels")(api(lambda r, m: {"labels": [
             {"id": "INBOX", "name": "INBOX"}, {"id": "Label_7", "name": "Private"},
         ]}))
@@ -125,6 +130,12 @@ class FakeGoogle:
             if self.history_expired:
                 return httpx.Response(404, json={"error": {"message": "historyId too old"}})
             return {"history": self.history, "historyId": "200"}
+
+        @web.route("POST", GMAIL + "/messages/send")
+        @api
+        def send_message(request, match):
+            self.sent.append(json.loads(request.content))
+            return {"id": f"sent-{len(self.sent)}"}
 
         @web.route("POST", GMAIL + "/drafts")
         @api
@@ -282,6 +293,64 @@ async def test_write_scope_is_opt_in_and_requires_reconnecting(client, app, goog
     query = await connect(client, "gmail")
     assert query["scope"] == [f"{READ_SCOPE} {COMPOSE_SCOPE}"]
     assert (await info(client, "gmail"))["status"] == "running"
+
+
+def decoded(sent: dict[str, Any]):
+    return message_from_bytes(base64.urlsafe_b64decode(sent["raw"]), policy=policy.default)
+
+
+@pytest.mark.real_mailer
+async def test_notification_email_goes_out_through_gmail_and_is_opt_in(client, app, google, mock_llm):
+    c = app.state.c
+    await client.patch("/api/settings", json={"values": {
+        "notifications.email.enabled": True, "notifications.categories": {"briefing": ["email"]},
+    }})
+
+    async def email_channel() -> dict[str, Any]:
+        channels = (await client.get("/api/notifications/channels")).json()["channels"]
+        return next(ch for ch in channels if ch["name"] == "email")
+
+    # Nothing connected yet: not ready, and it says what to do.
+    assert "Gmail plugin" in (await email_channel())["detail"]
+    await client.post("/api/plugins/gmail/enable")
+    await connect(client, "gmail")
+    status = await email_channel()
+    assert not status["ready"] and "Allow sending notification email" in status["detail"]
+    note = await c.notifier.notify(category="briefing", title="Morning", body="Two meetings.")
+    assert note["channels"] == {} and google.sent == []
+
+    # Turning it on asks for the send-only scope, and needs the account reconnected.
+    r = await client.put("/api/plugins/gmail/config", json={"config": {"enable_send": True}})
+    assert r.json()["status"] == "needs_auth"
+    assert "reconnect Gmail" in (await email_channel())["detail"]
+    query = await connect(client, "gmail")
+    assert query["scope"] == [f"{READ_SCOPE} {SEND_SCOPE}"]
+    assert (await email_channel()) == {
+        "name": "email", "label": "Email", "plugin": False, "ready": True,
+        "detail": "to your own Gmail address, sent through Gmail",
+    }
+
+    # To the account's own address by default, from that account, as plain text.
+    note = await c.notifier.notify(category="briefing", title="Morning", body="Two meetings.", url="/?tab=briefing")
+    assert note["channels"] == {"email": "ok"}
+    message = decoded(google.sent[0])
+    assert message["To"] == "me@example.com" and message["From"] == "me@example.com"
+    assert message["Subject"] == "[Assistant] Morning"
+    assert "Two meetings." in message.get_content() and "https://assistant.test/?tab=briefing" in message.get_content()
+
+    # A different address from Settings is used as given.
+    await client.patch("/api/settings", json={"values": {"notifications.email.to": "work@example.org"}})
+    assert (await client.post("/api/notifications/test", json={"channel": "email"})).json() == {"ok": True}
+    assert decoded(google.sent[1])["To"] == "work@example.org"
+
+    # The model still has no way to send mail: there is no such tool.
+    assert not [name for name in c.tools._tools if "send" in name]
+
+    # Old SMTP settings in a config file are ignored rather than refused.
+    from assistant.core.config import EmailConfig
+    assert EmailConfig.model_validate({"enabled": True, "host": "smtp.x", "password": "p", "to": "a@b.c"}).model_dump() == {
+        "enabled": True, "to": "a@b.c",
+    }
 
 
 # -- Gmail ----------------------------------------------------------------------------

@@ -58,8 +58,9 @@ it will sometimes be fooled and limits what a fooled model can do.
    return candidates in a fixed JSON shape. Each field is validated, and the action
    attached to a suggestion is built by the app. Nothing happens until you accept, except
    reminders in categories you set to automatic.
-5. **Write access is opt-in.** Gmail is read-only unless you enable drafts, and it can
-   never send. Calendar changes are off unless you enable them.
+5. **Write access is opt-in.** Gmail is read-only unless you enable drafts. Sending is a
+   second opt-in, used only to email you the assistant's own notifications: the recipient
+   comes from your settings and the model has no tool that sends mail. Calendar changes are off unless you enable them.
 6. **Links.** Only `http(s)` links and in-app paths are ever shown as links.
 
 What remains: a fooled model can still say something false or misleading in its reply, and
@@ -76,7 +77,8 @@ approval card shows the tool and its arguments, not the model's description of t
 - The key is `PA_SECRET_KEY`, or `data/secret.key` if unset. Back it up separately from
   the database: without it the encrypted values cannot be read.
 - Outbound connections: the LLM endpoints you configure; Google, for the plugins you
-  connect; Telegram and your SMTP server if you enable them; your browser's push service
+  connect; Telegram if you enable it (notification email goes through
+  the Gmail API, i.e. to Google); your browser's push service
   (payload end-to-end encrypted). Nothing else. There is no telemetry.
 - Logs: a filter removes bearer tokens, API keys, passwords, Telegram bot tokens and the
   token, code and state parameters of webhook and OAuth URLs. Message content is not logged.
@@ -109,6 +111,37 @@ compared in constant time.
 - Back up `data/` and the secret key.
 - The Docker setup runs as your user, with a read-only root filesystem, no capabilities
   and no privilege escalation.
+
+## MCP servers
+
+An MCP server is a third party that supplies tools to the model, and a local one is a
+program that runs with this app's permissions. So:
+
+- They are configured only in `config.yaml` or the environment. The settings API and web UI
+  cannot add one (`mcp.*` is not an overridable path), so a stolen browser session cannot
+  start a program or point the assistant at someone else's server.
+- A local server is started with a minimal environment (`PATH`, `HOME`, `LOGNAME`, `SHELL`,
+  `TERM`, `USER`) plus its configured `env`. `PA_SECRET_KEY`, the model API key and the rest
+  of the app's environment are not passed on. The server still runs as the same user and can
+  read anything that user can; run the app in a container or under its own account if that
+  matters.
+- Calls are held for approval by default, not only when outside content is involved: the
+  app cannot tell a read from a write. `read_only_tools` and `auto_approve_tools` are the
+  only ways to relax that, and a server's own `readOnlyHint` is ignored unless
+  `trust_read_only_hints` is set. Tool descriptions are written by the server, so they are
+  clipped, stripped of control characters and labelled with the server's name.
+- Results are always untrusted: they are fenced as outside data and close the approval gate
+  for everything else in the conversation, as mail does.
+- The tool list is read once per connection, so a server cannot add or swap tools in the
+  middle of a session. It is not offered sampling, roots or elicitation, so it cannot make
+  the assistant's model produce text or put questions to you.
+- Data sent to a server leaves this machine for it (arguments of every call you approve).
+  That is a destination beyond the model endpoint, so list only servers you trust with it.
+  Prefer `https://` for remote ones; plain `http://` to a non-local host logs a warning.
+  Redirects are not followed off the server's own origin.
+- Credentials in `env` and `headers` sit in `config.yaml` in plain text, like the model API
+  key. They never appear in the API, the settings view, or the app's logs. A server's own
+  stderr goes to the app's stderr unfiltered.
 
 ## Known gaps
 

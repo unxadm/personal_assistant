@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, type Briefing, type NotificationInfo, type Reminder } from "../api";
+import { api, type NotificationInfo, type Reminder } from "../api";
 
 const REPEATS: { label: string; rrule: string }[] = [
   { label: "Does not repeat", rrule: "" },
@@ -39,7 +39,6 @@ interface Draft {
 export default function Reminders() {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [log, setLog] = useState<NotificationInfo[]>([]);
-  const [briefing, setBriefing] = useState<Briefing["latest"]>(null);
   const [quick, setQuick] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState("");
@@ -48,10 +47,9 @@ export default function Reminders() {
   const load = useCallback(async () => {
     try {
       if (!zone) zone = (await api.settings()).timezone;
-      const [r, n, b] = await Promise.all([api.reminders(), api.notifications(), api.briefing()]);
+      const [r, n] = await Promise.all([api.reminders(), api.notifications()]);
       setReminders(r);
       setLog(n);
-      setBriefing(b.latest);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -244,29 +242,6 @@ export default function Reminders() {
           <h2 className="text-sm font-medium text-slate-300">Upcoming</h2>
           {upcoming.length === 0 && <p className="text-sm text-slate-500">No reminders set.</p>}
           <ul className="space-y-2">{upcoming.map(row)}</ul>
-        </section>
-
-        <section className="card space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-medium">Daily briefing</h2>
-            <button
-              className="btn-ghost"
-              disabled={busy === "briefing"}
-              onClick={() => run("briefing", api.runBriefing)}
-            >
-              {busy === "briefing" ? "Writing…" : "Send one now"}
-            </button>
-          </div>
-          {briefing ? (
-            <>
-              <p className="whitespace-pre-wrap text-sm text-slate-200">{briefing.text}</p>
-              <p className="text-xs text-slate-500">Written {when(briefing.generated_at)}</p>
-            </>
-          ) : (
-            <p className="text-sm text-slate-500">
-              None yet. Turn on the morning briefing under Settings → Notifications.
-            </p>
-          )}
         </section>
 
         {log.length > 0 && (

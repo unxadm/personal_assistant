@@ -182,4 +182,26 @@ async def reject_action(action_id: int, request: Request):
     return await _resolve(request, action_id, False)
 
 
+# -- MCP servers ----------------------------------------------------------------------
+# Read-only apart from reconnecting: servers are added in config.yaml, because a server
+# can be a program that runs on this machine.
+
+
+@authed.get("/mcp")
+async def list_mcp(request: Request):
+    return {"servers": container(request).mcp.status()}
+
+
+@authed.post("/mcp/{name}/reconnect")
+async def reconnect_mcp(name: str, request: Request):
+    manager = container(request).mcp
+    if name not in {s["name"] for s in manager.status()}:
+        raise HTTPException(404, f"Unknown MCP server {name!r}")
+    try:
+        await manager.reconnect(name)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from None
+    return {"servers": manager.status()}
+
+
 router.include_router(authed)

@@ -395,26 +395,18 @@ export default function SettingsPage() {
 
           <div className="space-y-3 border-t border-slate-800 pt-3">
             <h3 className="text-sm font-medium">Email</h3>
-            {toggle("notifications.email.enabled", n.email.enabled, "Use email")}
+            {toggle("notifications.email.enabled", n.email.enabled, "Email me through Gmail")}
+            <p className="text-xs text-slate-500">
+              Sent from your connected Gmail account through the Gmail API; there is no mail server or
+              password to enter. On the Plugins page, turn on “Allow sending notification email” for
+              Gmail and reconnect the account. That grants a send-only permission, used for these
+              notifications alone: the assistant still cannot send mail in a conversation.
+            </p>
             <div className="grid gap-3 sm:grid-cols-2">
-              {field("notifications.email.to", n.email.to, { label: "Send to", placeholder: "you@example.com" })}
-              {field("notifications.email.from_addr", n.email.from_addr, { label: "From", placeholder: "same as username" })}
-              {field("notifications.email.host", n.email.host, { label: "SMTP server", placeholder: "smtp.example.com" })}
-              {field("notifications.email.port", n.email.port, { label: "Port", type: "number" })}
-              {field("notifications.email.username", n.email.username, { label: "Username" })}
-              {field("notifications.email.password", n.email.password, { label: "Password", type: "password" })}
-              <label className="block text-xs text-slate-400">
-                Encryption
-                <select
-                  className="input mt-1"
-                  value={String(edits["notifications.email.security"] ?? n.email.security)}
-                  onChange={(e) => set("notifications.email.security", e.target.value)}
-                >
-                  <option value="starttls">STARTTLS (port 587)</option>
-                  <option value="ssl">SSL/TLS (port 465)</option>
-                  <option value="none">None</option>
-                </select>
-              </label>
+              {field("notifications.email.to", n.email.to, {
+                label: "Send to",
+                placeholder: "your Gmail address (leave empty)",
+              })}
             </div>
           </div>
 
@@ -508,9 +500,20 @@ export default function SettingsPage() {
 
           <div className="space-y-3 border-t border-slate-800 pt-3">
             <h3 className="text-sm font-medium">Daily briefing</h3>
-            {toggle("briefing.enabled", settings.briefing.enabled, "Send a summary of my day every morning")}
+            {toggle("briefing.enabled", settings.briefing.enabled, "Write a briefing of my day every morning (read it on the Briefing page)")}
             <div className="grid gap-3 sm:grid-cols-3">
               {field("briefing.time", settings.briefing.time, { label: "At", type: "time" })}
+              <label className="block text-xs text-slate-400 sm:col-span-2">
+                Length
+                <select
+                  className="input mt-1"
+                  value={String(edits["briefing.detail"] ?? settings.briefing.detail)}
+                  onChange={(e) => set("briefing.detail", e.target.value)}
+                >
+                  <option value="detailed">Detailed: a few hundred words, with tomorrow and what to do first</option>
+                  <option value="short">Short: 150 words at most</option>
+                </select>
+              </label>
             </div>
           </div>
         </section>

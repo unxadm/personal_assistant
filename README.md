@@ -19,10 +19,14 @@ design and [docs/SECURITY.md](docs/SECURITY.md) for what is protected and what i
   encrypted at rest.
 - Plugins, turned on and off at runtime from the Plugins page:
   - **Gmail**: sync, search, read, flag bills/receipts/travel/packages/deadlines, write
-    drafts (never sends). Pub/Sub push with polling fallback.
+    drafts (the assistant never sends mail in a conversation). Pub/Sub push with polling
+    fallback. Optionally sends the assistant's own notification emails to you.
   - **Google Calendar**: sync, list, find free time and conflicts, create/update/delete
     events. Push channels with polling fallback.
   - Examples: a local to-do list (`plugins/tasks`) and weather (`plugins/weather`).
+- MCP servers: connect any [MCP](https://modelcontextprotocol.io) server (a local program or
+  an HTTP endpoint) and the assistant can use its tools. Their results count as outside
+  content, and each call waits for your approval unless you mark the tool read-only.
 - Read-only by default: write access to Gmail and Calendar is a separate opt-in setting.
 - Approval gate: an action that changes something outside the app is held for your approval
   whenever email, event or other third-party content was involved in the request.
@@ -33,7 +37,8 @@ design and [docs/SECURITY.md](docs/SECURITY.md) for what is protected and what i
 - Notifications by browser/phone push, Telegram and email, with a channel choice per kind of
   notification, quiet hours, and Done / Snooze buttons on push and Telegram.
 - Chat with the assistant from Telegram.
-- A daily briefing: today's events, tasks and reminders due, and mail that needs attention.
+- A detailed daily briefing on its own page: today's schedule, tasks and reminders, mail that
+  needs attention, what is coming tomorrow, and what to do first.
 - Voice: press Speak in chat, or send a Telegram voice note; it is transcribed by your
   speech-to-text model. Replies can be played back with a Listen button.
 - Images: attach, paste or photograph a receipt, flyer, whiteboard or screenshot (in chat or
@@ -179,7 +184,7 @@ You create your own OAuth client, so tokens are issued to you and nobody else.
 
    | Plugin | Always | Only if you enable writing |
    |---|---|---|
-   | gmail | `gmail.readonly` | `gmail.compose` ("Allow creating drafts") |
+   | gmail | `gmail.readonly` | `gmail.compose` ("Allow creating drafts"), `gmail.send` ("Allow sending notification email") |
    | google_calendar | `calendar.events.readonly` | `calendar.events` ("Allow creating, changing and deleting events") |
 
    Google has no drafts-only scope; `gmail.compose` technically also permits sending, but the
@@ -219,6 +224,13 @@ press **Turn on for this device**. Repeat on each device.
 - Messages are encrypted for your browser; Google's, Mozilla's or Apple's push service only
   relays them.
 
+### Android app
+
+There is a native Android client in [android/](android/README.md): chat with pictures and
+dictation, the suggestion inbox, reminders, the briefing and the activity log. It gets
+notifications by asking your server every 15 minutes (every minute while open) instead of
+going through a push service, so they can arrive a little late.
+
 ### Telegram
 
 1. In Telegram, message **@BotFather**, send `/newbot` and follow the prompts. It replies
@@ -235,16 +247,30 @@ receives.
 
 ### Email
 
-Enter your provider's SMTP server, port, username and password, and the address to send to.
-Most providers need an app password rather than your normal one (Gmail: Google Account →
-Security → 2-Step Verification → App passwords; server `smtp.gmail.com`, port 587).
+Email is sent through the Gmail API from the Gmail account you connected, so there is no
+mail server or password to configure:
+
+1. On the **Plugins** page, open Gmail, turn on **Allow sending notification email**, save,
+   and reconnect the account. Google asks for one more permission, `gmail.send`, which can
+   send mail but not read, change or delete it.
+2. Under **Settings → Notifications → Email**, turn email on. Mail goes to that Gmail
+   address unless you enter another one under "Send to".
+
+Only the notification channel uses this. The assistant has no tool for sending mail in a
+conversation; it can still only save drafts, and only if you allowed that.
 
 ### Quiet hours and the daily briefing
 
 - **Quiet hours** hold notifications and deliver them when the period ends. A reminder set
   with urgency "high" ("…and wake me if you have to") comes through anyway.
-- **Daily briefing** is sent once a day at the time you choose, written by the chat model
-  from that day's data. "Send one now" on the Reminders page produces one on demand.
+- **Daily briefing** is written once a day at the time you choose, by the chat model from
+  that day's data, and has its own **Briefing** page (with the last two weeks below it and
+  "Write a new one" for one on demand). By default it is detailed: a few hundred words
+  under the headings Schedule, Tasks and reminders, Mail, Looking ahead and Suggested
+  focus, including overlaps, tomorrow, tasks due in the next few days and the weather if
+  the weather plugin is on. Set `briefing.detail: short` (Settings → Notifications → Length)
+  for the 150-word version. Notifications carry the opening of a long briefing and a link
+  to the page.
 
 ## Proactive suggestions
 
@@ -298,12 +324,35 @@ with `_` are ignored. To write one, copy `plugins/_template` and follow
 [docs/PLUGINS.md](docs/PLUGINS.md). Plugins are Python code running inside the app: install
 only ones you trust.
 
+## MCP servers
+
+List servers under `mcp.servers` in `config.yaml` (see [config.example.yaml](config.example.yaml)),
+restart, and their tools are offered to the model as `mcp_<server>_<tool>`. The Plugins page
+shows each server's status and tools, with a Reconnect button.
+
+- **Only in the file.** A server's `command` is a program run on this machine, so servers
+  cannot be added or changed from the web UI or the Settings API. The program gets a minimal
+  environment (`PATH`, `HOME`, ...) plus the `env` you list; the app's own secrets are not
+  passed on. In Docker, the command has to exist inside the container.
+- **Approval by default.** The app cannot tell what an arbitrary tool does, so every call
+  waits for your approval in the app (Inbox → pending actions) unless you list the tool under
+  `read_only_tools` (never asks), or `auto_approve_tools` (runs at once, like the calendar
+  tools, but is held whenever mail, web pages or another tool's result are involved).
+  `trust_read_only_hints: true` makes the server's own `readOnlyHint` count as `read_only_tools`;
+  a server can claim anything, so it is off.
+- **Results are untrusted.** Whatever a server returns is treated as outside content: it is
+  marked as data, and from then on changes made by other tools wait for approval too.
+- **Fixed tool list.** Tools are listed once per connection. A server that changes its tools
+  later is not picked up until it reconnects. It is not offered sampling or questions to you.
+- Everything it does shows in the Activity log. A server that cannot start or that drops is
+  retried with a growing delay, and left off after five failures until you press Reconnect.
+
 ## Configuration
 
 Precedence: defaults < `config.yaml` < environment (`PA_` prefix, `__` between levels) <
 Settings page. The Settings page can change `llm.*`, `agent.*`, `privacy.*`,
 `notifications.*`, `briefing.*`, `proactive.*` and `timezone`;
-server, auth, OAuth client and database settings are file/env only. See [config.example.yaml](config.example.yaml).
+server, auth, OAuth client, database and MCP server settings are file/env only. See [config.example.yaml](config.example.yaml).
 
 ## Tests
 
@@ -317,6 +366,8 @@ plugin loader, reminder parsing and scheduling, the LLM adapter, an end-to-end r
 flow, the proactive engine, sign-in security ([tests/test_security.py](tests/test_security.py))
 and prompt injection ([tests/test_injection.py](tests/test_injection.py)).
 
+The Android client has its own tests: `cd android && ./gradlew testDebugUnitTest lintDebug`.
+
 ## Layout
 
 ```
@@ -325,6 +376,7 @@ assistant/
   llm/      OpenAI-compatible adapter, JSON tool-calling fallback
   memory/   long-term facts, embedding store + semantic search
   agent/    conversation pipeline, tool registry, built-in tools
+  mcpclient/ MCP servers as tool sources
   plugins/  SDK, loader/manager, OAuth, item store, built-in gmail + google_calendar
   media/          upload type detection, image storage
   reminders/      reminder storage and state, RRULE handling, LLM tools
@@ -336,6 +388,7 @@ assistant/
   migrations/  Alembic
 plugins/    third-party plugins: _template, tasks, weather
 web/        React + Vite + Tailwind UI
+android/    native Android client (Kotlin + Compose)
 tests/
 docs/       ARCHITECTURE.md, PLUGINS.md, SECURITY.md
 Dockerfile, docker-compose.yml

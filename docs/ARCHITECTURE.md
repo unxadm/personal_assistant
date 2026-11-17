@@ -341,13 +341,17 @@ occurrences missed during downtime collapse into a single notification.
 **Channels.** Web push is implemented directly on `cryptography` and `httpx` (VAPID
 signing, aes128gcm payload encryption), so the push service only relays ciphertext; the
 VAPID key and the subscriptions are encrypted at rest. Telegram uses long polling, which
-needs no inbound connectivity, and serves exactly one configured chat id. Email is plain
-SMTP. Plugins with the `notification_channel` capability join the same registry.
+needs no inbound connectivity, and serves exactly one configured chat id. Email goes out
+through the Gmail API: the channel asks the Gmail plugin to send (`users.messages.send`
+with the opt-in `gmail.send` scope), so no mail password is stored. That method is not a
+tool, so the model cannot reach it. Plugins with the `notification_channel` capability join the same registry.
 
 **Daily briefing.** Gathers today's events, due tasks, reminders and flagged mail from
 `items`, and has the chat model write it up. That call is made with no tools, so text in
 an email subject or event title can at worst change the wording of the briefing. If the
-model is unavailable a plain list is sent instead.
+model is unavailable a plain list is sent instead. The text is written under fixed headings
+(`HEADINGS` in `scheduler/briefing.py`); the API returns it cut into `sections` so the web
+and Android Briefing pages can lay it out, along with the previous 14 days.
 
 **Reminders and the approval gate.** Changing, snoozing, completing or cancelling a
 reminder is side-effecting and is held for approval once external content is in the turn.
@@ -449,6 +453,20 @@ through `agent/untrusted.py` before it enters a prompt so it cannot close the fe
 in. Approving runs the
 stored call exactly once (double submits are refused) and writes the outcome into the
 conversation. Holding, approving and rejecting are written to the audit log.
+
+## MCP servers (built)
+
+`mcpclient/manager.py` turns each entry under `mcp.servers` into registry tools. One task per
+server holds the connection (stdio subprocess or Streamable HTTP, through the official `mcp`
+client) and, once it has listed the tools, registers each as `mcp_<server>_<tool>` with
+`untrusted_output=True` and `side_effecting=True`. Unless the config names a tool as
+read-only or auto-approved, it also has `confirm=True`: the approval gate then holds it on
+every call, not only when the turn is tainted (`Tool.needs_approval`). Approval runs it
+through the same `ToolRegistry.call`, so the audit log and pending-action flow are shared with
+every other tool. A dropped connection (the call sees `CONNECTION_CLOSED`) ends the task's
+session; the supervisor unregisters the tools, waits (2 s doubling up to 5 min) and
+reconnects, giving up after five failures until `POST /api/mcp/<name>/reconnect`. Start-up never
+waits for servers. `GET /api/mcp` reports status without commands, headers or environment.
 
 ## Security
 

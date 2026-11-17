@@ -15,7 +15,7 @@ import httpx
 
 from ..core.config import AppConfig, TelegramConfig
 from ..plugins.sdk import Notification
-from .service import Channel, ChannelError
+from .service import Channel, ChannelError, absolute_link
 
 log = logging.getLogger(__name__)
 
@@ -72,8 +72,9 @@ class TelegramChannel(Channel):
         text = notification.title
         if notification.body:
             text += "\n\n" + notification.body
-        if notification.url:
-            text += "\n" + notification.url
+        link = absolute_link(notification.url, self._get_config().server.public_url)
+        if link:
+            text += "\n" + link
         payload: dict[str, Any] = {"chat_id": self._cfg().chat_id, "text": text[:MAX_TEXT]}
         if notification.ref and notification.actions:
             payload["reply_markup"] = {

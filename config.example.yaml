@@ -92,19 +92,14 @@ notifications:
     bot_token: ""            # prefer PA_NOTIFICATIONS__TELEGRAM__BOT_TOKEN in .env
     chat_id: ""              # only this chat is served; send /start to the bot to learn it
     chat: true               # also accept chat messages there (false = notifications only)
-  email:
-    enabled: false
-    host: ""                 # SMTP server
-    port: 587
-    security: starttls       # starttls | ssl | none
-    username: ""
-    password: ""             # prefer PA_NOTIFICATIONS__EMAIL__PASSWORD in .env
-    from_addr: ""            # defaults to username
-    to: ""
+  email:                     # sent through the Gmail API from the connected Gmail account;
+    enabled: false           # also turn on "Allow sending notification email" in the Gmail plugin
+    to: ""                   # empty = that Gmail address itself
 
 briefing:
   enabled: false
   time: "07:30"              # local time; skipped if the server only starts 4+ hours later
+  detail: detailed           # detailed (a few hundred words under headings) | short (150 words)
 
 proactive:
   enabled: true
@@ -136,6 +131,30 @@ uploads:
 scheduler:
   enabled: true              # false stops reminders, briefings and Telegram polling
   tick_seconds: 10           # how often due reminders are checked
+
+# MCP servers (https://modelcontextprotocol.io): extra tools for the assistant. They can
+# only be added here, not from the web UI, because a "command" is a program that runs on
+# this machine with this app's permissions. Tools appear as mcp_<server>_<tool>.
+# Credentials in env/headers are stored here in plain text, like llm.chat.api_key.
+mcp:
+  connect_timeout: 30
+  call_timeout: 60
+  max_tools_per_server: 50
+  servers: {}
+  #  notes:                          # a local program, spoken to over stdin/stdout
+  #    command: npx
+  #    args: ["-y", "@example/notes-mcp-server"]
+  #    env: {NOTES_DIR: /home/me/notes}   # added to a minimal environment; the app's
+  #                                       # own environment (its secrets) is not passed on
+  #    read_only_tools: [search_notes, read_note]   # these never ask for approval
+  #    # Every other tool asks for your approval on every call, unless listed here:
+  #    auto_approve_tools: [add_note]    # runs at once, but is held if outside content
+  #                                      # (mail, web pages, a tool result) is involved
+  #  search:                         # a remote server over Streamable HTTP
+  #    url: https://mcp.example.com/mcp
+  #    headers: {Authorization: "Bearer ..."}
+  #    only_tools: [web_search]          # expose just these
+  #    trust_read_only_hints: false      # believe the server's own readOnlyHint
 
 # --- Provider examples -------------------------------------------------------------
 # OpenRouter:

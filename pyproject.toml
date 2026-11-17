@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0",
     "openai>=1.40",
     "httpx>=0.27",
+    "mcp>=2.3",
     "cryptography>=42",
     "argon2-cffi>=23.1",
     "sqlite-vec>=0.1.6",
@@ -41,6 +42,7 @@ assistant = ["migrations/*.mako", "migrations/versions/*.py", "plugins/builtin/*
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["real_mailer: send notification email through the Gmail plugin instead of the fake mailer"]
 
 [tool.ruff]
 line-length = 100

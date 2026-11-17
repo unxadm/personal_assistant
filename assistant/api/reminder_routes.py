@@ -190,7 +190,8 @@ async def unsubscribe(body: UnsubscribeBody, request: Request):
 
 @router.get("/briefing")
 async def briefing(request: Request) -> dict[str, Any]:
-    return {"latest": await container(request).briefing.latest()}
+    service = container(request).briefing
+    return {"latest": await service.latest(), "history": await service.history()}
 
 
 @router.post("/briefing/run")

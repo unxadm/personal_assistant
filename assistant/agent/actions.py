@@ -35,14 +35,20 @@ class ActionService:
                         "conversation_id": row.conversation_id},
             )
 
-    async def create(self, conversation_id: int | None, tool: str, arguments: dict[str, Any]) -> PendingAction:
+    async def create(
+        self,
+        conversation_id: int | None,
+        tool: str,
+        arguments: dict[str, Any],
+        reason: str = "outside content was involved",
+    ) -> PendingAction:
         async with self._db.session() as s:
             action = PendingAction(conversation_id=conversation_id, tool=tool, arguments=arguments)
             s.add(action)
             await s.commit()
         await self._log(
             "assistant", "action.held",
-            f"Held for your approval: {tool.replace('_', ' ')} (outside content was involved)",
+            f"Held for your approval: {tool.replace('_', ' ')} ({reason})",
             action,
         )
         return action

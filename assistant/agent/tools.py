@@ -40,10 +40,12 @@ class Tool:
     # Held for approval, like a side-effecting tool, when outside content is in play.
     # For tools that write things later prompts will trust (long-term memory).
     protected: bool = False
+    # Held for approval on every call, not only when outside content is in play. For tools
+    # whose effects the app cannot judge (third-party MCP servers).
+    confirm: bool = False
 
-    @property
-    def needs_approval_when_tainted(self) -> bool:
-        return self.side_effecting or self.protected
+    def needs_approval(self, tainted: bool) -> bool:
+        return self.confirm or (tainted and (self.side_effecting or self.protected))
 
     def spec(self) -> dict[str, Any]:
         return {

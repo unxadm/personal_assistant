@@ -19,17 +19,18 @@ from ..agent.builtin_tools import register_builtin_tools
 from ..agent.pipeline import Agent, ConversationNotFound
 from ..agent.tools import ToolRegistry
 from ..audit.service import AuditService, tool_recorder
-from ..core.config import ConfigService
+from ..core.config import LEGACY_EMAIL_KEYS, ConfigService
 from ..core.db import Database
 from ..core.events import EventBus
 from ..core.models import utcnow
 from ..core.security import SecretBox, restrict_permissions, setup_logging
 from ..core.settings_store import SettingsStore
 from ..llm.client import LLMClient, LLMError, LLMNotConfigured
+from ..mcpclient.manager import McpManager
 from ..media.store import AttachmentStore, MediaError, sniff_audio
 from ..memory.facts import MemoryService
 from ..memory.vectors import VectorStore
-from ..notifications.email import EmailChannel, smtp_send
+from ..notifications.email import EmailChannel, GmailMailer
 from ..notifications.service import NotificationService
 from ..notifications.telegram import TelegramChannel
 from ..notifications.webpush import WebPushChannel
@@ -83,6 +84,7 @@ class Container:
     media: AttachmentStore
     audit: AuditService
     proactive: ProactiveEngine
+    mcp: McpManager
     # One-time code the first-run form needs (None: not needed).
     setup_code: str | None = None
 
@@ -93,12 +95,12 @@ def create_app(
     llm_http_client: httpx.AsyncClient | None = None,
     plugin_http_client: httpx.AsyncClient | None = None,
     notify_http_client: httpx.AsyncClient | None = None,
-    email_sender=smtp_send,
+    mailer=None,
     clock: Callable[[], datetime] = utcnow,
     migrate: bool = True,
     secret_key: str | None = None,
 ) -> FastAPI:
-    """Build the app. The ``*_http_client``, ``email_sender`` and ``clock`` arguments let
+    """Build the app. The ``*_http_client``, ``mailer`` and ``clock`` arguments let
     tests route outside traffic to fakes and control time."""
     config = config or ConfigService.load()
 
@@ -114,8 +116,15 @@ def create_app(
         box = SecretBox.from_env_or_file(cfg.data_path, secret_key)
         restrict_permissions(cfg.data_path)
         settings = SettingsStore(db, box)
+        overrides = await settings.load_overrides()
+        stale = [k for k in overrides if k.removeprefix("notifications.email.") in LEGACY_EMAIL_KEYS]
+        if stale:
+            # Email no longer uses SMTP: forget the saved server settings and password.
+            overrides = {k: v for k, v in overrides.items() if k not in stale}
+            await settings.save_overrides(overrides)
+            log.info("removed %d saved SMTP settings; email is now sent through Gmail", len(stale))
         try:
-            config.apply_overrides(await settings.load_overrides())
+            config.apply_overrides(overrides)
         except ValueError as e:
             log.error("ignoring stored settings overrides that no longer validate: %s", e)
 
@@ -134,6 +143,7 @@ def create_app(
         plugins = PluginManager(
             db, box, tools, bus, items, lambda: config.config, http=plugin_http_client
         )
+        mcp = McpManager(tools, lambda: config.config)
 
         def get_config():
             return config.config
@@ -142,7 +152,7 @@ def create_app(
         notifier = NotificationService(db, get_config, clock)
         webpush = WebPushChannel(db, box, settings, notify_http, get_config)
         telegram = TelegramChannel(notify_http, get_config)
-        for channel in (webpush, telegram, EmailChannel(get_config, email_sender)):
+        for channel in (webpush, telegram, EmailChannel(get_config, mailer or GmailMailer(plugins, get_config))):
             notifier.register(channel)
         notifier.plugin_channels = plugins.notification_channels
         plugins.notifier = notifier
@@ -154,6 +164,7 @@ def create_app(
         proactive = ProactiveEngine(
             db, items, llm, reminders, tools, notifier, audit, get_config, clock
         )
+        briefing.pending_suggestions = proactive.list
         bus.subscribe(proactive.on_event)
         notifier.on_action("suggestion", proactive.handle_action)
 
@@ -206,7 +217,7 @@ def create_app(
         app.state.c = Container(
             config, db, box, settings, llm, vectors, memory, tools, agent, auth.LoginGuard(),
             bus, items, actions, plugins, notifier, webpush, telegram, reminders, briefing,
-            scheduler, clock, media, audit, proactive,
+            scheduler, clock, media, audit, proactive, mcp,
         )
         if await settings.get(auth.PASSWORD_KEY) is None:
             app.state.c.setup_code = auth.new_setup_code(cfg.server.host)
@@ -216,6 +227,7 @@ def create_app(
                     app.state.c.setup_code,
                 )
         await plugins.start()
+        await mcp.start()
         if cfg.scheduler.enabled:
             scheduler.start()
             telegram.start()
@@ -224,6 +236,7 @@ def create_app(
         finally:
             await scheduler.stop()
             await telegram.stop()
+            await mcp.stop()
             await plugins.stop()
             if notify_http_client is None:
                 await notify_http.aclose()

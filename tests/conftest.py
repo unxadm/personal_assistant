@@ -258,10 +258,30 @@ def clock() -> FakeClock:
     return FakeClock()
 
 
+class FakeMailer:
+    """Stands in for the Gmail plugin when a test is about notifications, not Gmail."""
+
+    def __init__(self, outbox: list):
+        self.outbox = outbox
+        self.down: str | None = None
+
+    def problem(self) -> str | None:
+        return self.down
+
+    async def send(self, to, subject, body) -> None:
+        self.outbox.append({"to": to, "subject": subject, "body": body})
+
+
 @pytest.fixture
 def outbox() -> list:
-    """Emails "sent" by the app: (EmailConfig, EmailMessage) tuples."""
+    """Emails "sent" by the app: {"to", "subject", "body"} dicts."""
     return []
+
+
+@pytest.fixture
+def mailer(outbox, request):
+    """A fake by default; tests marked ``real_mailer`` send through the Gmail plugin."""
+    return None if request.node.get_closest_marker("real_mailer") else FakeMailer(outbox)
 
 
 @pytest.fixture
@@ -271,11 +291,11 @@ def app_config(tmp_path) -> dict[str, Any]:
 
 
 @pytest.fixture
-async def app(app_config, mock_llm, web, plugin_dir, clock, outbox):
+async def app(app_config, mock_llm, web, plugin_dir, clock, mailer):
     config = ConfigService(app_config)
     application = create_app(
         config, llm_http_client=mock_llm.http_client(), plugin_http_client=web.client(),
-        notify_http_client=web.client(), email_sender=lambda cfg, msg: outbox.append((cfg, msg)),
+        notify_http_client=web.client(), mailer=mailer,
         clock=clock, migrate=False, secret_key="test-secret",
     )
     async with application.router.lifespan_context(application):

@@ -2,7 +2,8 @@ name: gmail
 version: 0.1.0
 description: >-
   Read, search and summarize Gmail; flag bills, receipts, travel, packages and deadlines;
-  optionally write draft replies (never sends).
+  optionally write draft replies, and optionally send the assistant's own notification
+  emails to you. The chat model can never send mail.
 entrypoint: plugin:GmailPlugin
 capabilities: [data_source, tools]
 sync_interval: 300        # polling fallback; Pub/Sub push triggers an immediate sync
@@ -19,6 +20,10 @@ oauth:
     # only ever calls drafts.create.
     enable_drafts:
       - https://www.googleapis.com/auth/gmail.compose
+    # Send only: cannot read, change or delete mail. Used by the email notification
+    # channel alone; no tool is exposed to the model.
+    enable_send:
+      - https://www.googleapis.com/auth/gmail.send
 config_schema:
   type: object
   additionalProperties: false
@@ -45,6 +50,14 @@ config_schema:
       type: boolean
       title: Allow creating drafts
       description: Requests the gmail.compose scope. Reconnect the account after changing.
+      default: false
+    enable_send:
+      type: boolean
+      title: Allow sending notification email
+      description: >-
+        Lets the assistant email its reminders and briefings to you from this account
+        (Settings → Notifications → Email). Requests the gmail.send scope. Reconnect the
+        account after changing.
       default: false
     pubsub_topic:
       type: string

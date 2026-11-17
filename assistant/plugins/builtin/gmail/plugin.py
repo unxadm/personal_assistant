@@ -67,6 +67,9 @@ def _addresses(*values: str | None) -> list[str]:
 
 
 class GmailPlugin(Plugin):
+    # The connected account's own address, looked up once when mail is first sent.
+    _address: str | None = None
+
     # -- API helpers ------------------------------------------------------------------
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -316,6 +319,33 @@ class GmailPlugin(Plugin):
             "attachments": item.data["attachments"],
             "body": item.body[:limit],
         }
+
+    # -- notification email ------------------------------------------------------------
+
+    async def send_notification(self, to: str | None, subject: str, body: str) -> None:
+        """Send one plain-text email from the connected account (``to=None``: to itself).
+
+        Deliberately not a tool: only the email notification channel calls this, with the
+        recipient taken from the user's settings, so nothing the model reads or writes can
+        cause mail to be sent.
+        """
+        if not self.ctx.config["enable_send"]:
+            raise PluginError(
+                "Sending is turned off. Enable 'Allow sending notification email' in the "
+                "Gmail plugin settings and reconnect the account."
+            )
+        if self._address is None:
+            self._address = (await self._call("GET", "/profile")).get("emailAddress") or ""
+        if not (to or self._address):
+            raise PluginError("Gmail did not say which address this account has")
+        email = EmailMessage()
+        email["To"] = to or self._address
+        if self._address:
+            email["From"] = self._address
+        email["Subject"] = subject
+        email.set_content(body)
+        raw = base64.urlsafe_b64encode(email.as_bytes()).decode()
+        await self._call("POST", "/messages/send", json={"raw": raw})
 
     @tool(
         "Save a draft email in Gmail for the user to review and send themselves. Never sends. "

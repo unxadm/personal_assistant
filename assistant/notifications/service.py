@@ -27,6 +27,14 @@ RETRY_DELAY = timedelta(minutes=1)
 KEEP = timedelta(days=30)
 
 
+def absolute_link(url: str | None, public_url: str | None) -> str | None:
+    """A link usable outside the web app (Telegram, email). In-app links such as
+    ``/?tab=briefing`` need ``server.public_url`` in front; without it there is no link."""
+    if url and url.startswith("/"):
+        return public_url.rstrip("/") + url if public_url else None
+    return url
+
+
 class ChannelError(Exception):
     """Delivery failed; the message is safe to show to the user."""
 

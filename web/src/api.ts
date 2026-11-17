@@ -106,6 +106,21 @@ export interface PluginInfo {
   } | null;
   webhook_url: string | null;
 }
+export interface McpTool {
+  name: string; // as the model sees it
+  tool: string; // the server's own name
+  approval: "never" | "when_outside_content" | "always";
+}
+
+export interface McpServer {
+  name: string;
+  kind: "command" | "url";
+  where: string;
+  status: "disabled" | "connecting" | "running" | "error";
+  error: string | null;
+  tools: McpTool[];
+}
+
 export interface PluginList {
   plugins: PluginInfo[];
   invalid: Record<string, string>;
@@ -149,23 +164,14 @@ export interface Settings {
   privacy: { exclude_labels: string[]; exclude_senders: string[]; exclude_calendars: string[] };
   notifications: {
     web_push: { enabled: boolean; contact: string | null };
-    email: {
-      enabled: boolean;
-      host: string | null;
-      port: number;
-      security: string;
-      username: string | null;
-      password: string | null;
-      from_addr: string | null;
-      to: string | null;
-    };
+    email: { enabled: boolean; to: string | null };
     telegram: { enabled: boolean; bot_token: string | null; chat_id: string | null; chat: boolean };
     default_channels: string[];
     categories: Record<string, string[]>;
     quiet_hours: { enabled: boolean; start: string; end: string };
     default_snooze_minutes: number;
   };
-  briefing: { enabled: boolean; time: string };
+  briefing: { enabled: boolean; time: string; detail: "short" | "detailed" };
   proactive: {
     enabled: boolean;
     levels: Record<string, Level>;
@@ -277,8 +283,16 @@ export interface ChannelStatus {
   devices: { id: number; label: string }[];
   quiet_until: string | null;
 }
+export interface BriefingRecord {
+  date: string;
+  text: string;
+  generated_at: string;
+  // The text cut at its headings; the opening paragraph has an empty title.
+  sections: { title: string; body: string }[];
+}
 export interface Briefing {
-  latest: { date: string; text: string; generated_at: string } | null;
+  latest: BriefingRecord | null;
+  history: BriefingRecord[];
 }
 
 export const api = {
@@ -336,6 +350,8 @@ export const api = {
   deleteFact: (id: number) => request("DELETE", `/memory/facts/${id}`),
 
   plugins: () => request<PluginList>("GET", "/plugins"),
+  mcpServers: () => request<{ servers: McpServer[] }>("GET", "/mcp"),
+  reconnectMcp: (name: string) => request<{ servers: McpServer[] }>("POST", `/mcp/${name}/reconnect`),
   rescanPlugins: () => request<PluginList>("POST", "/plugins/rescan"),
   enablePlugin: (name: string) => request<PluginInfo>("POST", `/plugins/${name}/enable`),
   disablePlugin: (name: string) => request<PluginInfo>("POST", `/plugins/${name}/disable`),

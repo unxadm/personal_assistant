@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type AuthStatus } from "./api";
 import Activity from "./pages/Activity";
+import Briefing from "./pages/Briefing";
 import Chat from "./pages/Chat";
 import Inbox from "./pages/Inbox";
 import Login from "./pages/Login";
@@ -9,9 +10,10 @@ import Plugins from "./pages/Plugins";
 import Reminders from "./pages/Reminders";
 import SettingsPage from "./pages/Settings";
 
-type Tab = "chat" | "inbox" | "reminders" | "memory" | "plugins" | "activity" | "settings";
+type Tab = "chat" | "briefing" | "inbox" | "reminders" | "memory" | "plugins" | "activity" | "settings";
 const TABS: { id: Tab; label: string }[] = [
   { id: "chat", label: "Chat" },
+  { id: "briefing", label: "Briefing" },
   { id: "inbox", label: "Inbox" },
   { id: "reminders", label: "Reminders" },
   { id: "memory", label: "Memory" },
@@ -24,7 +26,7 @@ export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [error, setError] = useState("");
   // The OAuth callback redirects back with ?tab=plugins&oauth=...; notifications open
-  // ?tab=reminders or ?tab=inbox.
+  // ?tab=reminders, ?tab=inbox or ?tab=briefing.
   const [tab, setTab] = useState<Tab>(() => {
     const wanted = new URLSearchParams(location.search).get("tab");
     return TABS.some((t) => t.id === wanted) ? (wanted as Tab) : "chat";
@@ -95,6 +97,7 @@ export default function App() {
       </header>
       <main className="min-h-0 flex-1">
         {tab === "chat" && <Chat draft={draft} onDraftUsed={() => setDraft("")} />}
+        {tab === "briefing" && <Briefing onSettings={() => setTab("settings")} />}
         {tab === "inbox" && (
           <Inbox
             onChanged={refreshCount}
