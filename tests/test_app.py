@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 import httpx
+import pytest
 from sqlalchemy import select
 
 from assistant.core.db import Database
@@ -21,11 +22,13 @@ def _system_prompt(mock_llm) -> str:
 # -- auth -----------------------------------------------------------------------------
 
 
+@pytest.mark.first_run
 async def test_auth_flow(app):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         assert (await c.get("/api/auth/status")).json() == {
             "setup_required": True, "setup_code_required": False, "authenticated": False,
+            "user": None,
         }
         assert (await c.get("/api/conversations")).status_code == 401
         assert (await c.post("/api/auth/setup", json={"password": "short"})).status_code == 422
@@ -122,7 +125,7 @@ async def test_llm_failure_returns_502(client, mock_llm):
 
 async def test_rag_pulls_relevant_past_messages_as_untrusted_context(client, mock_llm, app):
     await client.post("/api/chat", json={"text": "The wifi password at the cabin is trout42"})
-    await app.state.c.agent.drain()  # background indexing
+    await app.state.c.of(1).agent.drain()  # background indexing
 
     await client.post("/api/chat", json={"text": "what is the wifi password at the cabin"})
     system = _system_prompt(mock_llm)
@@ -137,7 +140,7 @@ async def test_rag_pulls_relevant_past_messages_as_untrusted_context(client, moc
 async def test_chat_works_when_embeddings_are_down(client, mock_llm, app):
     mock_llm.embeddings_status = 500
     r = await client.post("/api/chat", json={"text": "hello"})
-    await app.state.c.agent.drain()
+    await app.state.c.of(1).agent.drain()
     assert r.status_code == 200
 
 
@@ -148,7 +151,7 @@ async def test_long_conversations_are_summarized(client, mock_llm, app):
     for i in range(4):  # 8 messages > summarize_after
         r = await client.post("/api/chat", json={"text": f"message {i}", "conversation_id": conv_id})
         conv_id = r.json()["conversation_id"]
-        await c.agent.drain()
+        await c.of(1).agent.drain()
         if i == 2:
             mock_llm.script = ["reply 3", "SUMMARY: talked about messages 0-1"]
 
@@ -174,13 +177,13 @@ async def test_memory_editor_crud_and_vector_index(client, app):
     fact_id = r.json()["id"]
     await client.post("/api/memory/facts", json={"content": "Sister is named Anna"})
 
-    hits = await c.vectors.search("tea or coffee", kinds=["fact"], k=1)
+    hits = await c.of(1).vectors.search("tea or coffee", kinds=["fact"], k=1)
     assert hits[0].ref_id == str(fact_id)
     assert c.db.vec_available, "sqlite-vec should load in the test environment"
 
     r = await client.patch(f"/api/memory/facts/{fact_id}", json={"content": "Prefers green tea"})
     assert r.json()["content"] == "Prefers green tea"
-    assert (await c.vectors.search("green", kinds=["fact"], k=1))[0].text == "Prefers green tea"
+    assert (await c.of(1).vectors.search("green", kinds=["fact"], k=1))[0].text == "Prefers green tea"
 
     assert (await client.delete(f"/api/memory/facts/{fact_id}")).status_code == 200
     assert (await client.delete(f"/api/memory/facts/{fact_id}")).status_code == 404

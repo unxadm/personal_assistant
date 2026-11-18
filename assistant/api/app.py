@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -14,32 +15,18 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..agent.actions import ActionService
-from ..agent.builtin_tools import register_builtin_tools
-from ..agent.pipeline import Agent, ConversationNotFound
 from ..agent.tools import ToolRegistry
-from ..audit.service import AuditService, tool_recorder
-from ..core.config import LEGACY_EMAIL_KEYS, ConfigService
+from ..core.config import LEGACY_EMAIL_KEYS, ConfigService, is_server_setting
 from ..core.db import Database
-from ..core.events import EventBus
 from ..core.models import utcnow
 from ..core.security import SecretBox, restrict_permissions, setup_logging
 from ..core.settings_store import SettingsStore
-from ..llm.client import LLMClient, LLMError, LLMNotConfigured
+from ..core.users import UserService
+from ..llm.client import LLMClient
 from ..mcpclient.manager import McpManager
-from ..media.store import AttachmentStore, MediaError, sniff_audio
-from ..memory.facts import MemoryService
-from ..memory.vectors import VectorStore
-from ..notifications.email import EmailChannel, GmailMailer
-from ..notifications.service import NotificationService
-from ..notifications.telegram import TelegramChannel
-from ..notifications.webpush import WebPushChannel
-from ..plugins.items import ItemStore
-from ..plugins.manager import PluginManager
-from ..proactive.engine import ProactiveEngine
-from ..reminders.service import ReminderService
-from ..reminders.tools import register_reminder_tools
-from ..scheduler.briefing import BriefingService
+from ..notifications.telegram import TelegramBot
+from ..notifications.webpush import VapidKeys
+from ..plugins.oauth import OAuthService
 from ..scheduler.service import Scheduler
 from . import (
     auth,
@@ -49,44 +36,56 @@ from . import (
     proactive_routes,
     reminder_routes,
     routes,
+    user_routes,
 )
+from .tenants import Shared, Tenant, Tenants
 
 log = logging.getLogger(__name__)
 
 WEB_DIST = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
 
 
+async def _server_overrides(settings: SettingsStore) -> tuple[dict, list[str]]:
+    """Saved server-wide settings, and the saved paths that are not server-wide (left over
+    from before settings became personal) and so are ignored here."""
+    saved = await settings.load_overrides()
+    keep = {path: value for path, value in saved.items() if is_server_setting(path)}
+    return keep, sorted(set(saved) - set(keep))
+
+
+async def _drop_stale_email_settings(tenant: Tenant) -> None:
+    stale = [k for k in tenant.overrides if k.removeprefix("notifications.email.") in LEGACY_EMAIL_KEYS]
+    if stale:
+        # Email no longer uses SMTP: forget the saved server settings and password.
+        await tenant.save_overrides({k: v for k, v in tenant.overrides.items() if k not in stale})
+        log.info("removed %d saved SMTP settings; email is now sent through Gmail", len(stale))
+
+
 @dataclass
 class Container:
-    """Everything the request handlers need."""
+    """Everything the request handlers need. What belongs to one user is not here: it lives
+    in that user's :class:`Tenant` (``c.of(user_id)``)."""
 
     config: ConfigService
     db: Database
     box: SecretBox
-    settings: SettingsStore
+    settings: SettingsStore  # server-wide; a user's own is ``c.of(id).settings``
     llm: LLMClient
-    vectors: VectorStore
-    memory: MemoryService
-    tools: ToolRegistry
-    agent: Agent
+    tools: ToolRegistry  # server-wide tools (MCP); users have their own, chained to it
     login_guard: auth.LoginGuard
-    bus: EventBus
-    items: ItemStore
-    actions: ActionService
-    plugins: PluginManager
-    notifier: NotificationService
-    webpush: WebPushChannel
-    telegram: TelegramChannel
-    reminders: ReminderService
-    briefing: BriefingService
+    users: UserService
+    tenants: Tenants
+    oauth: OAuthService
+    vapid: VapidKeys
+    telegram: TelegramBot
     scheduler: Scheduler
     clock: Callable[[], datetime]
-    media: AttachmentStore
-    audit: AuditService
-    proactive: ProactiveEngine
     mcp: McpManager
     # One-time code the first-run form needs (None: not needed).
     setup_code: str | None = None
+
+    def of(self, user_id: int) -> Tenant:
+        return self.tenants.get(user_id)
 
 
 def create_app(
@@ -116,131 +115,91 @@ def create_app(
         box = SecretBox.from_env_or_file(cfg.data_path, secret_key)
         restrict_permissions(cfg.data_path)
         settings = SettingsStore(db, box)
-        overrides = await settings.load_overrides()
-        stale = [k for k in overrides if k.removeprefix("notifications.email.") in LEGACY_EMAIL_KEYS]
-        if stale:
-            # Email no longer uses SMTP: forget the saved server settings and password.
-            overrides = {k: v for k, v in overrides.items() if k not in stale}
-            await settings.save_overrides(overrides)
-            log.info("removed %d saved SMTP settings; email is now sent through Gmail", len(stale))
+        users = UserService(db, lambda: config.config.auth.min_password_length)
+
+        overrides, ignored = await _server_overrides(settings)
+        if ignored:
+            log.warning("ignoring server-wide saved settings that are personal now: %s", ", ".join(ignored))
         try:
             config.apply_overrides(overrides)
         except ValueError as e:
             log.error("ignoring stored settings overrides that no longer validate: %s", e)
 
         llm = LLMClient(lambda: config.config.llm, http_client=llm_http_client)
-        vectors = VectorStore(db, llm)
-        memory = MemoryService(db, vectors)
         tools = ToolRegistry()
-        register_builtin_tools(tools, memory, vectors)
-        audit = AuditService(db, clock)
-        tools.audit = tool_recorder(audit)
-        actions = ActionService(db, tools, audit)
-        media = AttachmentStore(db, lambda: config.config)
-        agent = Agent(db, llm, memory, vectors, tools, lambda: config.config, actions, media)
-        bus = EventBus()
-        items = ItemStore(db, vectors, bus, lambda: config.config.privacy)
-        plugins = PluginManager(
-            db, box, tools, bus, items, lambda: config.config, http=plugin_http_client
-        )
         mcp = McpManager(tools, lambda: config.config)
 
         def get_config():
             return config.config
 
+        plugin_http = plugin_http_client or httpx.AsyncClient()
         notify_http = notify_http_client or httpx.AsyncClient()
-        notifier = NotificationService(db, get_config, clock)
-        webpush = WebPushChannel(db, box, settings, notify_http, get_config)
-        telegram = TelegramChannel(notify_http, get_config)
-        for channel in (webpush, telegram, EmailChannel(get_config, mailer or GmailMailer(plugins, get_config))):
-            notifier.register(channel)
-        notifier.plugin_channels = plugins.notification_channels
-        plugins.notifier = notifier
-
-        reminders = ReminderService(db, notifier, get_config, clock)
-        notifier.on_action("reminder", reminders.handle_action)
-        register_reminder_tools(tools, reminders, notifier, get_config, clock)
-        briefing = BriefingService(items, reminders, llm, notifier, settings, get_config, clock)
-        proactive = ProactiveEngine(
-            db, items, llm, reminders, tools, notifier, audit, get_config, clock
+        bot = TelegramBot(notify_http, get_config)
+        shared = Shared(
+            config=config, db=db, box=box, settings=settings, llm=llm, tools=tools,
+            vapid=VapidKeys(settings), bot=bot, oauth=OAuthService(plugin_http), clock=clock,
+            plugin_http=plugin_http, notify_http=notify_http, mailer=mailer,
+            owner_id=await users.owner_id(),
         )
-        briefing.pending_suggestions = proactive.list
-        bus.subscribe(proactive.on_event)
-        notifier.on_action("suggestion", proactive.handle_action)
+        tenants = Tenants(shared)
+        bot.resolve = tenants.telegram_owner
+        bot.linking_open = tenants.telegram_linking_open
+        bot.wanted = tenants.telegram_wanted
 
-        async def telegram_message(text: str, images: list[tuple[bytes, str]]) -> str:
-            """Chat over Telegram: one ongoing conversation; /new starts another."""
-            key = "telegram.conversation_id"
-            if text.strip() == "/new" and not images:
-                await settings.delete(key)
-                return "Started a new conversation."
-            try:
-                ids = [(await media.save_image(data, name))["id"] for data, name in images]
-            except MediaError as e:
-                return f"I couldn't use that image: {e}."
-            conv_id = await settings.get(key)
-            try:
-                try:
-                    reply = await agent.handle(text, conv_id, channel="telegram", images=ids)
-                except ConversationNotFound:
-                    reply = await agent.handle(text, None, channel="telegram", images=ids)
-            except LLMError as e:
-                return f"That didn't work: {e}"
-            if reply.conversation_id != conv_id:
-                await settings.set(key, reply.conversation_id)
-            return reply.content or "(no reply)"
+        def each_user(job):
+            """A scheduler job that runs once for every active user; one user's failure
+            never stops the others."""
 
-        async def telegram_voice(audio: bytes) -> str:
-            kind = sniff_audio(audio)
-            if kind is None:
-                raise ValueError("I couldn't read that audio format.")
-            try:
-                return await llm.transcribe(audio, f"voice.{kind[1]}", kind[0])
-            except LLMNotConfigured:
-                raise ValueError(
-                    "Voice notes need a speech-to-text model. Set one under Settings."
-                ) from None
-            except LLMError as e:
-                raise ValueError(f"Transcription failed: {e}") from None
+            async def run(now: datetime) -> None:
+                for tenant in tenants.active():
+                    try:
+                        await job(tenant, now)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        log.exception("scheduled job failed for user %s", tenant.user_id)
 
-        telegram.on_message = telegram_message
-        telegram.on_voice = telegram_voice
-        telegram.on_action = notifier.handle_action
+            return run
 
         scheduler = Scheduler(get_config, clock)
-        scheduler.add_job("reminders", reminders.fire_due)
-        scheduler.add_job("notifications", notifier.flush)
-        scheduler.add_job("briefing", briefing.maybe_run)
-        scheduler.add_job("attachments", media.cleanup)
-        scheduler.add_job("proactive", proactive.tick)
+        scheduler.add_job("reminders", each_user(lambda t, now: t.reminders.fire_due(now)))
+        scheduler.add_job("notifications", each_user(lambda t, now: t.notifier.flush(now)))
+        scheduler.add_job("briefing", each_user(lambda t, now: t.briefing.maybe_run(now)))
+        scheduler.add_job("attachments", each_user(lambda t, now: t.media.cleanup(now)))
+        scheduler.add_job("proactive", each_user(lambda t, now: t.proactive.tick(now)))
 
         app.state.c = Container(
-            config, db, box, settings, llm, vectors, memory, tools, agent, auth.LoginGuard(),
-            bus, items, actions, plugins, notifier, webpush, telegram, reminders, briefing,
-            scheduler, clock, media, audit, proactive, mcp,
+            config=config, db=db, box=box, settings=settings, llm=llm, tools=tools,
+            login_guard=auth.LoginGuard(), users=users, tenants=tenants, oauth=shared.oauth,
+            vapid=shared.vapid, telegram=bot, scheduler=scheduler, clock=clock, mcp=mcp,
         )
-        if await settings.get(auth.PASSWORD_KEY) is None:
+        for user in await users.list():
+            tenant = await tenants.add(user, start=False)
+            await _drop_stale_email_settings(tenant)
+        if await users.count() == 0:
             app.state.c.setup_code = auth.new_setup_code(cfg.server.host)
             if app.state.c.setup_code:
                 log.warning(
-                    "No password is set yet. Open the app and enter this one-time setup code: %s",
+                    "No account exists yet. Open the app and enter this one-time setup code: %s",
                     app.state.c.setup_code,
                 )
-        await plugins.start()
+        for tenant in tenants.active():
+            await tenant.start()
         await mcp.start()
         if cfg.scheduler.enabled:
             scheduler.start()
-            telegram.start()
+            bot.start()
         try:
             yield
         finally:
             await scheduler.stop()
-            await telegram.stop()
+            await bot.stop()
             await mcp.stop()
-            await plugins.stop()
+            await tenants.stop()
+            if plugin_http_client is None:
+                await plugin_http.aclose()
             if notify_http_client is None:
                 await notify_http.aclose()
-            await agent.drain()
             await llm.aclose()
             await db.dispose()
 
@@ -252,6 +211,7 @@ def create_app(
     app.include_router(reminder_routes.router)
     app.include_router(media_routes.router)
     app.include_router(proactive_routes.router)
+    app.include_router(user_routes.router)
 
     if WEB_DIST.is_dir():
         app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")

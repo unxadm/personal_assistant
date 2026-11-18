@@ -6,7 +6,8 @@ the design, `docs/SECURITY.md` the threat model, `docs/PLUGINS.md` the plugin AP
 
 ## What this is
 
-A self-hosted, **single-user** personal assistant: FastAPI backend (Python 3.12), React PWA,
+A self-hosted personal assistant for **one person or a few**, each with their own private
+data (multi-user, see "Users and isolation"): FastAPI backend (Python 3.12), React PWA,
 a native Android client, plugins (Gmail, Google Calendar, examples), reminders, notifications
 (web push, Telegram, email through Gmail), a daily briefing, a proactive suggestion engine,
 long-term memory with vector search, and MCP servers as extra tools. One database (SQLite via
@@ -15,6 +16,7 @@ SQLAlchemy async), one process, no queue or Redis.
 The owner's requirements that shape everything:
 - Their data never leaves their server except to the LLM endpoint they configure (plus the
   services they connect: Google, Telegram, push, MCP servers listed in config).
+- One user's data is never visible to, or changed by, another user (admins included).
 - Secrets and OAuth tokens are encrypted at rest; nothing sensitive goes into logs.
 - Anything that sends, deletes, pays or contacts people needs **approval** by default.
 - Retrieved content (mail, pages, tool results) is **data, never instructions**.
@@ -66,8 +68,9 @@ assistant/
   proactive/   rules, model screening of mail, suggestion inbox
   audit/       audit log + undo
   media/       image/audio upload handling
-  api/         app.py (wiring: create_app), auth.py, hardening.py, *_routes.py
-  migrations/  Alembic versions 0001..0006
+  api/         app.py (wiring: create_app), tenants.py (one service stack per user), auth.py,
+               user_routes.py (admin), hardening.py, *_routes.py
+  migrations/  Alembic versions 0001..0007
 plugins/       third-party examples: _template, tasks, weather
 web/src/       React + Vite + Tailwind (pages/, api.ts is the typed client, App.tsx has the tabs)
 android/       Kotlin + Compose client (own README)
@@ -75,10 +78,38 @@ tests/         pytest; conftest.py holds the fakes
 docs/
 ```
 
-`assistant/api/app.py::create_app` builds every service inside the lifespan and exposes them as
-`app.state.c` (a `Container`). To add a service, construct it there, add a `Container` field
-(the dataclass is constructed positionally: keep the order in sync), and start/stop it in the
-lifespan.
+`assistant/api/app.py::create_app` builds the shared services inside the lifespan and exposes
+them as `app.state.c` (a `Container`, constructed with keyword arguments). To add a *shared*
+service, construct it there, add a `Container` field and start/stop it in the lifespan. To add
+a *per-user* service (anything that holds a user's data), construct it in
+`api/tenants.py::build` with the user id, add a `Tenant` field, and reach it from handlers
+with `mine(request)` (see below) and from tests with `c.of(1)`.
+
+## Users and isolation (second most important invariant)
+
+- Every table that holds a user's data has `user_id` (FK, `ON DELETE CASCADE`);
+  `tests/test_multiuser.py` fails if a new table lacks it. Per-user settings live in the
+  user's scope of `SettingsStore` (`settings.scoped(uid)`, keys `user:<id>:...`).
+- Per-user services (agent, memory, vectors, items, reminders, notifier and channels, plugin
+  manager, audit, approvals, briefing, proactive, media) take `user_id` in the constructor and
+  add it to **every** query, including `get` by id (check `row.user_id`). A lookup by id
+  that belongs to someone else must behave exactly like "not found".
+- Handlers get the signed-in user's stack from `auth.mine(request)`; `container(request)` is for
+  shared things only. Never accept a user id from the client for data access. A test greps
+  that `c.<per-user service>` is not used on the shared container.
+- Roles: `require_auth` (signed in, not waiting for a forced password change),
+  `require_admin`. New admin-only endpoints depend on `require_admin`; server-wide settings
+  (`is_server_setting`) need it too. Admins get **no** endpoint that returns another user's
+  data.
+- Tool registries are per user, chained to the shared one (MCP). Register user-specific tools
+  on the tenant's registry, server-wide ones on `c.tools`.
+- Config: `Tenant.cfg()` is the user's effective config (`ConfigService.build_for_user`). Pass
+  that (not `c.config.config`) to anything acting for a user. Personal vs server-wide paths:
+  `USER_PREFIXES`/`ADMIN_PREFIXES`/`SERVER_WIDE_PATHS` in `core/config.py`.
+- Scheduler jobs loop over `tenants.active()`; add new periodic work through `each_user` in
+  `create_app`.
+- Telegram, web push keys and the OAuth state table are shared infrastructure that route to the
+  right user (`Tenants.telegram_owner`, subscription `user_id`, `_Pending.user_id`).
 
 ## The turn, and the approval gate (most important invariant)
 
@@ -114,7 +145,8 @@ page overrides stored in the database.
   declared on the model** or startup fails. Legacy keys can be dropped with a `mode="before"`
   validator (see `EmailConfig`).
 - Only paths under `OVERRIDABLE_PREFIXES` can be changed from the UI. `server`, `auth`,
-  `oauth`, `database`, `plugins` and `mcp` are file/env only on purpose. Do not add `mcp.` there:
+  `oauth`, `database`, `plugins` and `mcp` are file/env only on purpose. Of the overridable
+  paths, `llm.`/`agent.` and three Telegram/push paths are server-wide (admins); the rest are per user. Do not add `mcp.` there:
   an MCP `command` is arbitrary program execution.
 - Secrets: `is_secret_path` (suffixes `api_key`, `client_secret`, `password`, `bot_token`) are
   masked in the settings view and encrypted when saved. Settings views are built from explicit
@@ -123,7 +155,7 @@ page overrides stored in the database.
 
 ## Database
 
-SQLAlchemy models in `core/models.py`. **Schema changes need both** the model *and* a new
+SQLAlchemy models in `core/models.py` (`owner_id()` is the shared `user_id` column). **Schema changes need both** the model *and* a new
 Alembic revision in `assistant/migrations/versions/` (next number, `down_revision` = previous).
 The app runs migrations at start (`Database.migrate`); tests use `create_all` instead
 (`migrate=False`), so a missing migration will not fail the suite: write it and check that
@@ -165,8 +197,12 @@ Keep it that way. `tests/fake_mcp_server.py` is a real stdio server used by the 
 - `FakeClock` (`clock`): fixed "now" (2026-03-10 12:00 UTC, a Tuesday); `clock.advance(...)`.
 - `FakeMailer` / `outbox` / `mailer`: notification email; mark a test `real_mailer` to go through
   the Gmail plugin and `FakeGoogle` (`tests/test_google.py`).
-- `app` / `client` fixtures: a started app and an authenticated `httpx` client. Edit `app_config`
-  first to change config. The scheduler is disabled; tests call `tick()` / `flush()` themselves.
+- `app` / `client` fixtures: a started app with one account, the owner (user 1, admin), and an
+  `httpx` client signed in as them. Mark a test `first_run` for an app with no accounts. Use
+  `add_user(app, "alice")` and `sign_in(app, "alice")` for more accounts, `browser(app)` for a
+  cookie-less client, and `c = app.state.c; c.of(1).reminders...` to reach a user's services. Edit
+  `app_config` first to change config. The scheduler is disabled; tests call `tick()` /
+  `flush()` themselves.
 - `write_plugin(plugin_dir, name, code, **manifest)` creates a throwaway plugin.
 
 Every behaviour change gets a test; security properties (gate, fencing, auth, log redaction)

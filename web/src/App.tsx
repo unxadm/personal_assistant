@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type AuthStatus } from "./api";
 import Activity from "./pages/Activity";
 import Briefing from "./pages/Briefing";
+import ChangePassword from "./pages/ChangePassword";
 import Chat from "./pages/Chat";
 import Inbox from "./pages/Inbox";
 import Login from "./pages/Login";
@@ -9,8 +10,9 @@ import Memory from "./pages/Memory";
 import Plugins from "./pages/Plugins";
 import Reminders from "./pages/Reminders";
 import SettingsPage from "./pages/Settings";
+import Users from "./pages/Users";
 
-type Tab = "chat" | "briefing" | "inbox" | "reminders" | "memory" | "plugins" | "activity" | "settings";
+type Tab = "chat" | "briefing" | "inbox" | "reminders" | "memory" | "plugins" | "activity" | "people" | "settings";
 const TABS: { id: Tab; label: string }[] = [
   { id: "chat", label: "Chat" },
   { id: "briefing", label: "Briefing" },
@@ -19,6 +21,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "memory", label: "Memory" },
   { id: "plugins", label: "Plugins" },
   { id: "activity", label: "Activity" },
+  { id: "people", label: "People" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -29,7 +32,7 @@ export default function App() {
   // ?tab=reminders, ?tab=inbox or ?tab=briefing.
   const [tab, setTab] = useState<Tab>(() => {
     const wanted = new URLSearchParams(location.search).get("tab");
-    return TABS.some((t) => t.id === wanted) ? (wanted as Tab) : "chat";
+    return TABS.some((t) => t.id === wanted && t.id !== "people") ? (wanted as Tab) : "chat";
   });
 
   const [waiting, setWaiting] = useState(0);
@@ -56,7 +59,7 @@ export default function App() {
     return () => window.removeEventListener("pa:unauthorized", refresh);
   }, [refresh]);
 
-  const signedIn = auth?.authenticated === true;
+  const signedIn = auth?.authenticated === true && !auth.user?.must_change_password;
   useEffect(() => {
     if (!signedIn) return;
     refreshCount();
@@ -69,12 +72,15 @@ export default function App() {
   }
   if (!auth) return null;
   if (!auth.authenticated) return <Login setup={auth.setup_required} needsSetupCode={auth.setup_code_required} onDone={refresh} />;
+  if (auth.user?.must_change_password) return <ChangePassword username={auth.user.username} onDone={refresh} />;
+  const admin = auth.user?.role === "admin";
+  const tabs = TABS.filter((t) => t.id !== "people" || admin);
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-slate-800 px-3 py-2">
         <span className="mr-3 hidden font-semibold sm:inline">Assistant</span>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
@@ -92,7 +98,7 @@ export default function App() {
           className="ml-auto shrink-0 rounded-lg px-3 py-1.5 text-sm text-slate-400 hover:text-slate-200"
           onClick={() => api.logout().finally(refresh)}
         >
-          Sign out
+          Sign out{auth.user ? ` (${auth.user.username})` : ""}
         </button>
       </header>
       <main className="min-h-0 flex-1">
@@ -111,6 +117,7 @@ export default function App() {
         {tab === "reminders" && <Reminders />}
         {tab === "memory" && <Memory />}
         {tab === "plugins" && <Plugins />}
+        {tab === "people" && admin && auth.user && <Users me={auth.user.id} />}
         {tab === "settings" && <SettingsPage />}
       </main>
     </div>

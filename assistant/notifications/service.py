@@ -57,12 +57,17 @@ ActionHandler = Callable[[str, str], Awaitable[str]]
 
 
 class NotificationService:
+    """One user's notifications: their inbox and log, sent through their own channels."""
+
     def __init__(
         self,
         db: Database,
         get_config: Callable[[], AppConfig],
         clock: Callable[[], datetime] = utcnow,
+        *,
+        user_id: int,
     ):
+        self._user_id = user_id
         self._db = db
         self._get_config = get_config
         self._clock = clock
@@ -120,7 +125,7 @@ class NotificationService:
         now = self._clock()
         hold_until = None if urgency == "high" else self.quiet_until(now)
         row = NotificationRecord(
-            category=category, title=title, body=body, url=safe_url(url), urgency=urgency, ref=ref,
+            user_id=self._user_id, category=category, title=title, body=body, url=safe_url(url), urgency=urgency, ref=ref,
             status="held", deliver_after=hold_until or now,
             results={"_actions": actions or []},
         )
@@ -138,11 +143,20 @@ class NotificationService:
             ids = (
                 await s.scalars(
                     select(NotificationRecord.id)
-                    .where(NotificationRecord.status == "held", NotificationRecord.deliver_after <= now)
+                    .where(
+                        NotificationRecord.user_id == self._user_id,
+                        NotificationRecord.status == "held",
+                        NotificationRecord.deliver_after <= now,
+                    )
                     .order_by(NotificationRecord.id)
                 )
             ).all()
-            await s.execute(delete(NotificationRecord).where(NotificationRecord.created_at < now - KEEP))
+            await s.execute(
+                delete(NotificationRecord).where(
+                    NotificationRecord.user_id == self._user_id,
+                    NotificationRecord.created_at < now - KEEP,
+                )
+            )
             await s.commit()
         for record_id in ids:
             await self._deliver(record_id, now)
@@ -229,14 +243,17 @@ class NotificationService:
     async def get(self, record_id: int) -> dict[str, Any]:
         async with self._db.session() as s:
             row = await s.get(NotificationRecord, record_id)
-            assert row is not None
+            assert row is not None and row.user_id == self._user_id
             return self.view(row)
 
     async def recent(self, limit: int = 50) -> list[dict[str, Any]]:
         async with self._db.session() as s:
             rows = (
                 await s.scalars(
-                    select(NotificationRecord).order_by(NotificationRecord.id.desc()).limit(limit)
+                    select(NotificationRecord)
+                    .where(NotificationRecord.user_id == self._user_id)
+                    .order_by(NotificationRecord.id.desc())
+                    .limit(limit)
                 )
             ).all()
         return [self.view(r) for r in rows]

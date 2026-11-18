@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..llm.client import LLMError, LLMNotConfigured
 from ..media.store import MediaError, sniff_audio
-from .auth import container, require_auth
+from .auth import container, mine, require_auth
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
@@ -42,14 +42,14 @@ async def upload_image(request: Request):
     c = container(request)
     data = await _read(request, c.config.config.uploads.max_image_mb, "image")
     try:
-        return await c.media.save_image(data, unquote(request.headers.get("x-filename", "")))
+        return await mine(request).media.save_image(data, unquote(request.headers.get("x-filename", "")))
     except MediaError as e:
         raise HTTPException(415, str(e)) from None
 
 
 @router.get("/attachments/{attachment_id}")
 async def get_image(attachment_id: int, request: Request):
-    found = await container(request).media.get(attachment_id)
+    found = await mine(request).media.get(attachment_id)
     if found is None:
         raise HTTPException(404, "Attachment not found")
     row, path = found

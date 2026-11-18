@@ -47,19 +47,19 @@ async def set_values(client, **values):
 async def test_default_channels_and_category_routing(client, app, telegram, outbox):
     c = c_of(app)
     # Default channels are web push + Telegram; no browser is subscribed, so Telegram only.
-    note = await c.notifier.notify(category="system", title="Hello")
+    note = await c.of(1).notifier.notify(category="system", title="Hello")
     assert note["status"] == "sent" and note["channels"] == {"telegram": "ok"}
     assert outbox == []
 
     await set_values(client, **{"notifications.categories": {"briefing": ["email"]}})
-    note = await c.notifier.notify(category="briefing", title="Morning", body="Two meetings.")
+    note = await c.of(1).notifier.notify(category="briefing", title="Morning", body="Two meetings.")
     assert note["channels"] == {"email": "ok"} and len(telegram) == 1
     [message] = outbox
     assert message["to"] == "me@test" and message["subject"] == "[Assistant] Morning"
     assert "Two meetings." in message["body"] and "https://assistant.test" in message["body"]
 
     # Gmail not ready (plugin off, sending not allowed, ...): the channel says why.
-    c.notifier.channels["email"]._mailer.down = "reconnect Gmail on the Plugins page to grant permission to send"
+    c.of(1).notifier.channels["email"]._mailer.down = "reconnect Gmail on the Plugins page to grant permission to send"
     channels = {ch["name"]: ch for ch in (await client.get("/api/notifications/channels")).json()["channels"]}
     assert not channels["email"]["ready"] and "reconnect Gmail" in channels["email"]["detail"]
     r = await client.post("/api/notifications/test", json={"channel": "email"})
@@ -72,25 +72,25 @@ async def test_falls_back_to_other_channels_then_retries(client, app, web, teleg
     web.json("POST", r"https://api\.telegram\.org/bot[^/]+/sendMessage", {"ok": False, "description": "Bad Gateway"}, 502)
 
     # Preferred channel is down: the notification goes out by email instead of being lost.
-    note = await c.notifier.notify(category="reminder", title="Dentist")
+    note = await c.of(1).notifier.notify(category="reminder", title="Dentist")
     assert note["status"] == "sent"
     assert note["channels"] == {"telegram": "error: Telegram sendMessage: Bad Gateway", "email": "ok"}
 
     # Everything down: kept and retried on later scheduler ticks.
     await set_values(client, **{"notifications.email.enabled": False})
-    note = await c.notifier.notify(category="reminder", title="Bins")
+    note = await c.of(1).notifier.notify(category="reminder", title="Bins")
     assert note["status"] == "held"
     web.json("POST", r"https://api\.telegram\.org/bot[^/]+/sendMessage", {"ok": True, "result": {}})
     await c.scheduler.tick(clock.advance(seconds=30))
-    assert (await c.notifier.get(note["id"]))["status"] == "held"  # not time yet
+    assert (await c.of(1).notifier.get(note["id"]))["status"] == "held"  # not time yet
     await c.scheduler.tick(clock.advance(seconds=40))
-    assert (await c.notifier.get(note["id"]))["status"] == "sent"
+    assert (await c.of(1).notifier.get(note["id"]))["status"] == "sent"
 
 
 async def test_no_channel_configured_is_recorded_not_lost(client, app):
     c = c_of(app)
     await set_values(client, **{"notifications.email.enabled": False, "notifications.telegram.enabled": False})
-    note = await c.notifier.notify(category="reminder", title="Only in the app")
+    note = await c.of(1).notifier.notify(category="reminder", title="Only in the app")
     assert note["status"] == "failed" and note["channels"] == {}
     assert [n["title"] for n in (await client.get("/api/notifications")).json()] == ["Only in the app"]
     r = await client.post("/api/notifications/test", json={"channel": "telegram"})
@@ -106,9 +106,9 @@ async def test_quiet_hours_hold_until_morning_unless_urgent(client, app, telegra
         "notifications.quiet_hours.end": "07:00",
     })
     clock.now = datetime(2026, 3, 10, 22, 30, tzinfo=UTC)  # 23:30 in Oslo
-    held = await c.notifier.notify(category="system", title="Can wait")
+    held = await c.of(1).notifier.notify(category="system", title="Can wait")
     assert held["status"] == "held" and held["deliver_after"] == "2026-03-11T06:00:00+00:00"
-    urgent = await c.notifier.notify(category="system", title="Cannot wait", urgency="high")
+    urgent = await c.of(1).notifier.notify(category="system", title="Cannot wait", urgency="high")
     assert urgent["status"] == "sent"
     assert [p["text"] for _, p in telegram] == ["Cannot wait"]
 
@@ -120,9 +120,9 @@ async def test_quiet_hours_hold_until_morning_unless_urgent(client, app, telegra
     assert [p["text"] for _, p in telegram] == ["Cannot wait", "Can wait"]
 
     # Daytime: not quiet. A window that does not cross midnight also works.
-    assert c.notifier.quiet_until(datetime(2026, 3, 11, 12, 0, tzinfo=UTC)) is None
+    assert c.of(1).notifier.quiet_until(datetime(2026, 3, 11, 12, 0, tzinfo=UTC)) is None
     await set_values(client, **{"notifications.quiet_hours.start": "13:00", "notifications.quiet_hours.end": "14:00"})
-    assert c.notifier.quiet_until(datetime(2026, 3, 11, 12, 30, tzinfo=UTC)) == datetime(2026, 3, 11, 13, 0, tzinfo=UTC)
+    assert c.of(1).notifier.quiet_until(datetime(2026, 3, 11, 12, 30, tzinfo=UTC)) == datetime(2026, 3, 11, 13, 0, tzinfo=UTC)
     r = await client.patch("/api/settings", json={"values": {"notifications.quiet_hours.start": "25:00"}})
     assert r.status_code == 422
 
@@ -198,7 +198,7 @@ async def test_web_push_is_encrypted_for_the_browser_and_signed(client, app, web
     bad = {"endpoint": "http://insecure.example/x", "keys": {"p256dh": "AAAA", "auth": "AAAA"}}
     assert (await client.post("/api/push/subscribe", json=bad)).status_code == 422
 
-    reminder = await c.reminders.create("Stand-up meeting", "2026-03-10T12:15")
+    reminder = await c.of(1).reminders.create("Stand-up meeting", "2026-03-10T12:15")
     await c.scheduler.tick(clock.advance(minutes=16))
 
     [request] = received
@@ -229,12 +229,12 @@ async def test_expired_push_subscription_is_removed(client, app, web):
     web.route("POST", r"https://push\.example/send/gone")(lambda request, m: httpx.Response(410))
     await client.post("/api/push/subscribe", json=browser.subscription())
     with pytest.raises(ChannelError):
-        await c.webpush.send(Notification(title="x"))
-    assert await c.webpush.devices() == []
+        await c.of(1).webpush.send(Notification(title="x"))
+    assert await c.of(1).webpush.devices() == []
 
     await client.post("/api/push/subscribe", json=browser.subscription())
     await client.post("/api/push/unsubscribe", json={"endpoint": browser.endpoint})
-    assert await c.webpush.devices() == []
+    assert await c.of(1).webpush.devices() == []
 
 
 # -- telegram -------------------------------------------------------------------------
@@ -275,7 +275,8 @@ async def test_telegram_chat_only_serves_the_configured_chat(client, app, telegr
 async def test_telegram_setup_tells_you_your_chat_id(client, app, telegram, mock_llm):
     c = c_of(app)
     await set_values(client, **{"notifications.telegram.chat_id": None})
-    c.config.apply_overrides({k: v for k, v in c.config.overrides.items()} | {"notifications.telegram.chat_id": ""})
+    mine = c.of(1)
+    mine.set_overrides({**mine.overrides, "notifications.telegram.chat_id": ""})
     status = {ch["name"]: ch for ch in (await client.get("/api/notifications/channels")).json()["channels"]}
     assert not status["telegram"]["ready"] and "/start" in status["telegram"]["detail"]
     await c.telegram.handle_update(_message("/start", chat_id=777))
@@ -300,7 +301,7 @@ async def test_telegram_polling_and_token_never_leaks(client, app, web, telegram
         raise httpx.ConnectError(f"cannot connect to {request.url}")
 
     web.route("POST", r"https://api\.telegram\.org/bot[^/]+/sendMessage")(boom)
-    note = await c.notifier.notify(category="system", title="x")
+    note = await c.of(1).notifier.notify(category="system", title="x")
     assert BOT_TOKEN not in json.dumps(note) and BOT_TOKEN not in caplog.text
     assert note["channels"]["telegram"] == "error: Telegram sendMessage: ConnectError"
 
@@ -342,44 +343,44 @@ async def test_plugins_can_be_channels_and_can_notify(client, app, plugin_dir, w
 
     names = [ch["name"] for ch in (await client.get("/api/notifications/channels")).json()["channels"]]
     assert "pager" in names and "quiet" not in names
-    note = await c.notifier.notify(category="reminder", title="Via plugin", urgency="high")
+    note = await c.of(1).notifier.notify(category="reminder", title="Via plugin", urgency="high")
     assert note["channels"] == {"pager": "ok"}
     assert json.loads(web.sent("POST", "pager.test")[0].content) == {"title": "Via plugin", "urgency": "high"}
 
     # ctx.notify needs the `notify` permission.
-    ok, _ = await c.tools.call("pager_nag", {}, None)
+    ok, _ = await c.of(1).tools.call("pager_nag", {}, None)
     assert ok and telegram[-1][1]["text"].startswith("Stand up (pager)")
-    ok, result = await c.tools.call("quiet_nag", {}, None)
+    ok, result = await c.of(1).tools.call("quiet_nag", {}, None)
     assert not ok and "permissions.notify" in result
 
     await client.post("/api/plugins/pager/disable")
-    assert (await c.notifier.notify(category="reminder", title="Fallback"))["channels"] == {"telegram": "ok"}
+    assert (await c.of(1).notifier.notify(category="reminder", title="Fallback"))["channels"] == {"telegram": "ok"}
 
 
 # -- daily briefing -------------------------------------------------------------------
 
 
 async def _seed(c):
-    await c.items.upsert("cal", [
+    await c.of(1).items.upsert("cal", [
         Item(external_id="e1", type="event", title="Design review", starts_at=datetime(2026, 3, 10, 14, 0, tzinfo=UTC),
              ends_at=datetime(2026, 3, 10, 15, 0, tzinfo=UTC), data={"location": "Room 4"}),
         Item(external_id="e2", type="event", title="Tomorrow's thing", starts_at=datetime(2026, 3, 11, 9, 0, tzinfo=UTC)),
         Item(external_id="e3", type="event", title="Cancelled sync", starts_at=datetime(2026, 3, 10, 16, 0, tzinfo=UTC),
              data={"status": "cancelled"}),
     ])
-    await c.items.upsert("todo", [
+    await c.of(1).items.upsert("todo", [
         Item(external_id="t1", type="task", title="Submit expenses", due_at=datetime(2026, 3, 9, 17, 0, tzinfo=UTC), data={"done": False}),
         Item(external_id="t3", type="task", title="Book flights", due_at=datetime(2026, 3, 12, 12, 0, tzinfo=UTC), data={"done": False}),
         Item(external_id="t2", type="task", title="Already finished", due_at=datetime(2026, 3, 10, 9, 0, tzinfo=UTC), data={"done": True}),
     ])
-    await c.items.upsert("mail", [
+    await c.of(1).items.upsert("mail", [
         Item(external_id="m1", type="message", title="Invoice 4471 due Friday", occurred_at=datetime(2026, 3, 10, 6, 0, tzinfo=UTC),
              data={"from": "billing@acme.example", "snippet": "Please pay NOK 900 by Friday.",
                    "signals": {"categories": ["bill"]}}),
         Item(external_id="m2", type="message", title="Newsletter", occurred_at=datetime(2026, 3, 10, 7, 0, tzinfo=UTC),
              data={"signals": {"categories": []}}),
     ])
-    await c.reminders.create("Pick up parcel", "2026-03-10T17:30")
+    await c.of(1).reminders.create("Pick up parcel", "2026-03-10T17:30")
 
 
 async def test_briefing_gathers_today_and_is_sent_once_a_day(client, app, mock_llm, telegram, clock):
@@ -453,11 +454,11 @@ async def test_briefing_without_model_and_when_started_late(client, app, mock_ll
 async def test_briefing_detail_sections_history_and_long_notification(client, app, mock_llm, telegram, clock):
     c = c_of(app)
     await _seed(c)
-    await c.items.upsert("cal", [
+    await c.of(1).items.upsert("cal", [
         Item(external_id="e4", type="event", title="Dentist", starts_at=datetime(2026, 3, 10, 14, 30, tzinfo=UTC),
              ends_at=datetime(2026, 3, 10, 15, 30, tzinfo=UTC), data={"location": "Storgata 5"}),
     ])
-    await c.items.upsert("weather", [
+    await c.of(1).items.upsert("weather", [
         Item(external_id="forecast:2026-03-10", type="item", title="Weather in Oslo", body="High 4°C, low -2°C.",
              data={"kind": "weather", "date": "2026-03-10"}),
     ])
@@ -504,7 +505,7 @@ async def test_briefing_detail_sections_history_and_long_notification(client, ap
 async def test_saved_smtp_settings_are_forgotten_at_startup(app_config, mock_llm, web, client, app):
     """Email used to go over SMTP; an upgraded install drops what was saved for it."""
     c = c_of(app)
-    await c.settings.save_overrides({
+    await c.of(1).settings.save_overrides({
         "notifications.email.host": "smtp.old.example", "notifications.email.password": "old-smtp-pass",
         "notifications.email.to": "me@test", "briefing.time": "06:45",
     })
@@ -515,9 +516,9 @@ async def test_saved_smtp_settings_are_forgotten_at_startup(app_config, mock_llm
     )
     async with again.router.lifespan_context(again):
         fresh = again.state.c
-        assert await fresh.settings.load_overrides() == {
+        assert await fresh.of(1).settings.load_overrides() == {
             "notifications.email.to": "me@test", "briefing.time": "06:45",
         }
-        assert fresh.config.config.briefing.time == "06:45"
+        assert fresh.of(1).cfg().briefing.time == "06:45"
         async with fresh.db.session() as s:
-            assert await s.get(Setting, "config:notifications.email.password") is None
+            assert await s.get(Setting, "user:1:config:notifications.email.password") is None

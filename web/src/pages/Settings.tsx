@@ -88,6 +88,7 @@ const SLOTS: SlotDef[] = [
 ];
 
 function slotOf(settings: Settings, def: SlotDef): Partial<LLMSlot> {
+  if (!settings.llm) return {} as LLMSlot;
   if (def.id === "fallback") return settings.llm.chat.fallback ?? {};
   return settings.llm[def.id as "chat"];
 }
@@ -265,12 +266,13 @@ export default function SettingsPage() {
         <div>
           <h1 className="text-lg font-semibold">Settings</h1>
           <p className="text-sm text-slate-400">
-            Any OpenAI-compatible endpoint works. Values saved here override config.yaml and
-            environment variables. Empty endpoint or key fields inherit from the chat model.
+            {settings.admin
+              ? "The model settings, assistant name and Telegram bot token are for the whole server; everything else is yours alone. Any OpenAI-compatible endpoint works. Values saved here override config.yaml and environment variables. Empty endpoint or key fields inherit from the chat model."
+              : "These settings are yours alone. The AI model and the server's Telegram bot are set up by an admin."}
           </p>
         </div>
 
-        {SLOTS.map((def) => {
+        {settings.admin && SLOTS.map((def) => {
           const slot = slotOf(settings, def);
           const result = results[def.id];
           return (
@@ -332,7 +334,7 @@ export default function SettingsPage() {
           <h2 className="font-medium">General</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             {field("timezone", settings.timezone, { label: "Timezone", placeholder: "e.g. Europe/Oslo" })}
-            {field("agent.name", settings.agent.name, { label: "Assistant name" })}
+            {settings.admin && field("agent.name", settings.agent.name, { label: "Assistant name" })}
           </div>
           <div className="space-y-3 border-t border-slate-800 pt-3">
             <div>
@@ -380,11 +382,15 @@ export default function SettingsPage() {
           <div className="space-y-3 border-t border-slate-800 pt-3">
             <h3 className="text-sm font-medium">Telegram</h3>
             {toggle("notifications.telegram.enabled", n.telegram.enabled, "Use Telegram")}
+            {!settings.admin && !settings.telegram_bot && (
+              <p className="text-xs text-amber-400">No Telegram bot is set up on this server yet; ask an admin.</p>
+            )}
             <div className="grid gap-3 sm:grid-cols-2">
-              {field("notifications.telegram.bot_token", n.telegram.bot_token, {
-                label: "Bot token (from @BotFather)",
-                type: "password",
-              })}
+              {settings.admin &&
+                field("notifications.telegram.bot_token", n.telegram.bot_token, {
+                  label: "Bot token (from @BotFather), for everyone on this server",
+                  type: "password",
+                })}
               {field("notifications.telegram.chat_id", n.telegram.chat_id, {
                 label: "Your chat ID",
                 placeholder: "save the token, then send /start to your bot",

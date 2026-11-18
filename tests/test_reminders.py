@@ -81,45 +81,45 @@ def test_describe_and_format():
 async def test_one_off_fires_once_then_snooze_and_complete(app, clock):
     c = c_of(app)
     with pytest.raises(ReminderError, match="in the past"):
-        await c.reminders.create("too late", "2026-03-10T11:00")
+        await c.of(1).reminders.create("too late", "2026-03-10T11:00")
     with pytest.raises(ReminderError, match="empty"):
-        await c.reminders.create("  ", "2026-03-10T13:00")
+        await c.of(1).reminders.create("  ", "2026-03-10T13:00")
 
-    r = await c.reminders.create("Call the dentist", "2026-03-10T13:00")
+    r = await c.of(1).reminders.create("Call the dentist", "2026-03-10T13:00")
     assert r["status"] == "scheduled" and r["due_at"] == "2026-03-10T13:00:00+00:00"
 
     await c.scheduler.tick(clock.advance(minutes=59))
-    assert await c.notifier.recent() == []
+    assert await c.of(1).notifier.recent() == []
     await c.scheduler.tick(clock.advance(minutes=2))
-    [note] = await c.notifier.recent()
+    [note] = await c.of(1).notifier.recent()
     assert note["title"] == "Call the dentist" and note["ref"] == f"reminder:{r['id']}"
     assert note["category"] == "reminder" and "today 13:00" in note["body"]
-    assert (await c.reminders.get(r["id"]))["status"] == "fired"
+    assert (await c.of(1).reminders.get(r["id"]))["status"] == "fired"
 
     # It does not fire again on later ticks.
     await c.scheduler.tick(clock.advance(minutes=30))
-    assert len(await c.notifier.recent()) == 1
+    assert len(await c.of(1).notifier.recent()) == 1
 
-    snoozed = await c.reminders.snooze(r["id"], minutes=15)
+    snoozed = await c.of(1).reminders.snooze(r["id"], minutes=15)
     assert snoozed["status"] == "scheduled" and snoozed["snoozed_until"] == "2026-03-10T13:46:00+00:00"
     await c.scheduler.tick(clock.advance(minutes=14))
-    assert len(await c.notifier.recent()) == 1
+    assert len(await c.of(1).notifier.recent()) == 1
     await c.scheduler.tick(clock.advance(minutes=2))
-    assert len(await c.notifier.recent()) == 2
+    assert len(await c.of(1).notifier.recent()) == 2
 
-    done = await c.reminders.complete(r["id"])
+    done = await c.of(1).reminders.complete(r["id"])
     assert done["status"] == "done" and done["next_at"] is None
     with pytest.raises(ReminderError, match="nothing to snooze"):
-        await c.reminders.snooze(r["id"], minutes=5)
-    assert await c.reminders.list() == []
-    assert len(await c.reminders.list(include_closed=True)) == 1
+        await c.of(1).reminders.snooze(r["id"], minutes=5)
+    assert await c.of(1).reminders.list() == []
+    assert len(await c.of(1).reminders.list(include_closed=True)) == 1
 
 
 async def test_missed_reminder_fires_late_after_downtime(app, clock):
     c = c_of(app)
-    await c.reminders.create("Take out the bins", "2026-03-10T12:30")
+    await c.of(1).reminders.create("Take out the bins", "2026-03-10T12:30")
     await c.scheduler.tick(clock.advance(hours=6))  # server was "down" over the due time
-    [note] = await c.notifier.recent()
+    [note] = await c.of(1).notifier.recent()
     assert "delivered late" in note["body"]
 
 
@@ -129,62 +129,62 @@ async def test_missed_reminder_fires_late_after_downtime(app, clock):
 async def test_recurring_advances_and_collapses_missed_occurrences(app, clock):
     c = c_of(app)
     # Created on a Tuesday for "every Monday 08:00": first occurrence is next Monday.
-    r = await c.reminders.create("Weekly review", "2026-03-10T08:00", rrule="FREQ=WEEKLY;BYDAY=MO")
+    r = await c.of(1).reminders.create("Weekly review", "2026-03-10T08:00", rrule="FREQ=WEEKLY;BYDAY=MO")
     assert r["due_at"] == "2026-03-16T08:00:00+00:00" and r["repeat"] == "every week on Mon"
 
     clock.now = datetime(2026, 3, 16, 8, 0, 30, tzinfo=UTC)
     await c.scheduler.tick()
-    after = await c.reminders.get(r["id"])
+    after = await c.of(1).reminders.get(r["id"])
     assert after["status"] == "scheduled" and after["due_at"] == "2026-03-23T08:00:00+00:00"
-    assert len(await c.notifier.recent()) == 1
+    assert len(await c.of(1).notifier.recent()) == 1
 
     # Three weeks pass with the server off: one notification, not three.
     clock.now = datetime(2026, 4, 7, 10, 0, tzinfo=UTC)
     await c.scheduler.tick()
-    assert len(await c.notifier.recent()) == 2
-    assert (await c.reminders.get(r["id"]))["due_at"] == "2026-04-13T08:00:00+00:00"
+    assert len(await c.of(1).notifier.recent()) == 2
+    assert (await c.of(1).reminders.get(r["id"]))["due_at"] == "2026-04-13T08:00:00+00:00"
 
     # "Done" on a repeating reminder keeps the series; cancel ends it.
-    assert (await c.reminders.complete(r["id"]))["status"] == "scheduled"
-    assert (await c.reminders.cancel(r["id"]))["status"] == "cancelled"
+    assert (await c.of(1).reminders.complete(r["id"]))["status"] == "scheduled"
+    assert (await c.of(1).reminders.cancel(r["id"]))["status"] == "cancelled"
     clock.now = datetime(2026, 4, 13, 9, 0, tzinfo=UTC)
     await c.scheduler.tick()
-    assert len(await c.notifier.recent()) == 2
+    assert len(await c.of(1).notifier.recent()) == 2
 
 
 async def test_recurring_series_ends_and_snooze_keeps_schedule(app, clock):
     c = c_of(app)
-    r = await c.reminders.create("Antibiotics", "2026-03-10T18:00", rrule="FREQ=DAILY;COUNT=2")
+    r = await c.of(1).reminders.create("Antibiotics", "2026-03-10T18:00", rrule="FREQ=DAILY;COUNT=2")
     clock.now = datetime(2026, 3, 10, 18, 0, tzinfo=UTC)
     await c.scheduler.tick()
 
     # Snooze the occurrence that just went off; the next regular one is untouched.
-    snoozed = await c.reminders.snooze(r["id"], minutes=30)
+    snoozed = await c.of(1).reminders.snooze(r["id"], minutes=30)
     assert snoozed["due_at"] == "2026-03-11T18:00:00+00:00"
     assert snoozed["snoozed_until"] == "2026-03-10T18:30:00+00:00"
     await c.scheduler.tick(clock.advance(minutes=31))
-    mid = await c.reminders.get(r["id"])
+    mid = await c.of(1).reminders.get(r["id"])
     assert mid["snoozed_until"] is None and mid["next_at"] == mid["due_at"]
-    assert len(await c.notifier.recent()) == 2
+    assert len(await c.of(1).notifier.recent()) == 2
 
     with pytest.raises(ReminderError, match="already set to go off sooner"):
-        await c.reminders.snooze(r["id"], until="2026-03-12T09:00")
+        await c.of(1).reminders.snooze(r["id"], until="2026-03-12T09:00")
 
     clock.now = datetime(2026, 3, 11, 18, 0, tzinfo=UTC)
     await c.scheduler.tick()
-    assert (await c.reminders.get(r["id"]))["status"] == "fired"  # COUNT=2 used up
-    assert len(await c.notifier.recent()) == 3
+    assert (await c.of(1).reminders.get(r["id"]))["status"] == "fired"  # COUNT=2 used up
+    assert len(await c.of(1).notifier.recent()) == 3
 
 
 async def test_update_reschedules(app, clock):
     c = c_of(app)
-    r = await c.reminders.create("Water plants", "2026-03-10T13:00")
+    r = await c.of(1).reminders.create("Water plants", "2026-03-10T13:00")
     await c.scheduler.tick(clock.advance(hours=2))
-    assert (await c.reminders.get(r["id"]))["status"] == "fired"
-    changed = await c.reminders.update(r["id"], when="2026-03-12T07:30", rrule="FREQ=DAILY", text="Water the plants")
+    assert (await c.of(1).reminders.get(r["id"]))["status"] == "fired"
+    changed = await c.of(1).reminders.update(r["id"], when="2026-03-12T07:30", rrule="FREQ=DAILY", text="Water the plants")
     assert changed["status"] == "scheduled" and changed["repeat"] == "every day"
     assert changed["due_at"] == "2026-03-12T07:30:00+00:00" and changed["text"] == "Water the plants"
-    one_off = await c.reminders.update(r["id"], rrule="")
+    one_off = await c.of(1).reminders.update(r["id"], rrule="")
     assert one_off["rrule"] is None and one_off["due_at"] == "2026-03-12T07:30:00+00:00"
 
 

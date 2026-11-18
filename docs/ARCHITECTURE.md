@@ -17,6 +17,8 @@ design were left out: an MCP bridge for plugins, and running plugins in a subpro
   user's approval unless they have explicitly opted a category into automatic action.
 - **Local first.** Data leaves the server only for the configured LLM endpoint, which may
   itself be local.
+- **Many users, no shared data.** Each account gets its own stack of services built with
+  its user id (see "Users" below); the model, MCP servers and Telegram bot are shared.
 
 ## Components
 
@@ -251,7 +253,42 @@ their reverse (`create_reminder` → `cancel_reminder`, `remember_fact` → `for
 is claimed first so it cannot run twice, and is itself logged. Held, approved and rejected
 actions, and reminders created from suggestions, are logged too.
 
+## Users (built)
+
+`core/users.py` holds accounts (`users`: username, Argon2 hash, role `admin|member`,
+`disabled`, `must_change_password`); the first one is the owner. `api/auth.py` signs in by
+username (optional while there is exactly one account), keeps a session per account
+(`auth_sessions.user_id`) and offers `require_auth` (past the forced password change),
+`require_session` and `require_admin` as dependencies. Per-user secrets such as the TOTP
+secret live in the user's own scope of the settings store (`user:<id>:` key prefix).
+
+`api/tenants.py::build` constructs one `Tenant` per user: `VectorStore`, `MemoryService`,
+`ToolRegistry` (parent: the shared registry), `AuditService`, `ActionService`, `Agent`,
+`ItemStore`, `PluginManager`, `NotificationService` with its channels, `ReminderService`,
+`BriefingService`, `ProactiveEngine`, an `EventBus`, and a config view. Services take the
+user id at construction and add it to every query. `Container` keeps what is shared
+(`config`, `db`, `llm`, the MCP registry, the Telegram bot, the VAPID keys, the OAuth state
+table, the scheduler) and `c.of(user_id)` returns a tenant. The scheduler's jobs loop over
+the active tenants and isolate failures per user. Plugin code is shared on disk but each
+tenant imports its own copy (`pa_plugins_u<id>`), so users do not share plugin state.
+
+**Config layering.** `ConfigService.config` is the server-wide config (file, environment,
+admin overrides). `Tenant.cfg()` is `ConfigService.build_for_user`: the same base plus that
+user's saved personal overrides (`USER_PREFIXES`), with the two identity paths
+(`IDENTITY_PATHS`) kept only for the owner. It is cached and rebuilt when either layer
+changes.
+
+**Telegram.** `TelegramBot` is the single poller and API client; it finds the user whose
+linked chat an update came from (`Tenants.telegram_owner`) and calls that user's
+`TelegramChannel` handlers. `TelegramChannel` is the per-user sender/status.
+
 ## Data model
+
+Every table below except `users` and `settings` also has `user_id`
+(`ON DELETE CASCADE`); `settings` is shared but keys of a user's own start with
+`user:<id>:`. Uniqueness that used to be global is per user: `items (user_id, plugin,
+external_id)`, `embeddings (user_id, kind, ref_id)`, `suggestions (user_id, dedupe_key)`,
+`plugins (user_id, name)`, `plugin_kv (user_id, plugin, key)`.
 
 Built in Phase 1:
 
@@ -261,7 +298,8 @@ Built in Phase 1:
 | `messages` | User/assistant turns; `meta` holds model, fallback flag, tool events |
 | `memory_facts` | Facts and preferences; `source` is `user` or `agent` |
 | `embeddings` | `(kind, ref_id)` → text, model, dim, float32 vector blob |
-| `settings` | Key/value: UI config overrides (secrets encrypted), password hash |
+| `settings` | Key/value: server-wide config overrides (secrets encrypted) and per-user keys under `user:<id>:` |
+| `users` | Accounts: username, password hash, role, disabled, must-change-password |
 | `auth_sessions` | SHA-256 of session tokens with expiry |
 
 **Vectors.** Embeddings are stored as blobs in an ordinary table and ranked with

@@ -50,7 +50,7 @@ DEMO_MANIFEST = {
 
 
 def manager(app):
-    return app.state.c.plugins
+    return app.state.c.of(1).plugins
 
 
 async def rescan(client):
@@ -96,7 +96,7 @@ async def test_repo_example_plugins_and_template_have_valid_manifests(app, clien
 async def test_enable_and_disable_at_runtime_registers_and_removes_tools(client, app, plugin_dir, mock_llm):
     write_plugin(plugin_dir, "demo", DEMO, **DEMO_MANIFEST)
     await rescan(client)
-    tools = app.state.c.tools
+    tools = app.state.c.of(1).tools
     assert tools.get("demo_echo") is None
 
     info = (await client.post("/api/plugins/demo/enable")).json()
@@ -117,7 +117,7 @@ async def test_enable_and_disable_at_runtime_registers_and_removes_tools(client,
     # State survives a restart: the enabled flag is persisted.
     await client.post("/api/plugins/demo/enable")
     async with app.state.c.db.session() as s:
-        assert (await s.get(PluginState, "demo")).enabled
+        assert (await s.get(PluginState, (1, "demo"))).enabled
 
 
 async def test_new_and_changed_plugins_load_without_restart(client, app, plugin_dir):
@@ -135,17 +135,17 @@ async def test_new_and_changed_plugins_load_without_restart(client, app, plugin_
     assert "late" in plugins
     await client.post("/api/plugins/late/enable")
     ctx = None
-    assert await app.state.c.tools.call("late_version", {}, ctx) == (True, "v1")
+    assert await app.state.c.of(1).tools.call("late_version", {}, ctx) == (True, "v1")
 
     # Edit the code on disk; re-enabling picks up the new version.
     write_plugin(plugin_dir, "late", code.replace("v1", "v2"))
     await client.post("/api/plugins/late/enable")
-    assert await app.state.c.tools.call("late_version", {}, ctx) == (True, "v2")
+    assert await app.state.c.of(1).tools.call("late_version", {}, ctx) == (True, "v2")
 
     # Removing the directory removes the plugin and its tools.
     shutil.rmtree(plugin_dir / "late")
     plugins, _ = await rescan(client)
-    assert "late" not in plugins and app.state.c.tools.get("late_version") is None
+    assert "late" not in plugins and app.state.c.of(1).tools.get("late_version") is None
 
 
 async def test_config_validation_secrets_and_restart_on_change(client, app, plugin_dir):
@@ -167,10 +167,10 @@ async def test_config_validation_secrets_and_restart_on_change(client, app, plug
     assert info["status"] == "running"  # restarted with the new settings
     assert info["secrets"] == {"api_token": True}  # value is never returned
     assert "tok-secret-value" not in r.text
-    assert (await app.state.c.tools.call("demo_echo", {}, None))[1].endswith('"greeting": "hello"}')
+    assert (await app.state.c.of(1).tools.call("demo_echo", {}, None))[1].endswith('"greeting": "hello"}')
 
     async with app.state.c.db.session() as s:
-        row = await s.get(PluginState, "demo")
+        row = await s.get(PluginState, (1, "demo"))
     assert row.secrets and "tok-secret-value" not in row.secrets  # encrypted at rest
 
 
@@ -217,12 +217,12 @@ async def test_failing_plugin_is_shut_off_and_app_keeps_working(client, app, plu
     info = next(p for p in (await client.get("/api/plugins")).json()["plugins"] if p["name"] == "flaky")
     # max_failures is 2 in tests: crash + failed sync trips the breaker.
     assert info["status"] == "error" and "upstream exploded" in info["error"]
-    assert info["tools"] == [] and app.state.c.tools.get("flaky_hang") is None
+    assert info["tools"] == [] and app.state.c.of(1).tools.get("flaky_hang") is None
     assert (await client.post("/api/plugins/flaky/sync")).status_code == 409
 
     # Re-enabling resets it; a hang becomes a timeout instead of blocking the app.
     await client.post("/api/plugins/flaky/enable")
-    ok, output = await app.state.c.tools.call("flaky_hang", {}, None)
+    ok, output = await app.state.c.of(1).tools.call("flaky_hang", {}, None)
     assert not ok and "timed out" in output
     assert (await client.get("/api/health")).json() == {"ok": True}
 
@@ -257,7 +257,7 @@ async def test_permissions_are_enforced_by_the_context(client, app, plugin_dir, 
     web.json("GET", r"https://sub\.wild\.test/.*", {"ok": True})
     await rescan(client)
     await client.post("/api/plugins/sneaky/enable")
-    call = app.state.c.tools.call
+    call = app.state.c.of(1).tools.call
 
     for tool_name, phrase in [
         ("sneaky_write_event", "data_write"),
@@ -300,22 +300,22 @@ async def test_items_are_stored_indexed_deduplicated_and_emit_events(client, app
     c = app.state.c
 
     assert (await client.post("/api/plugins/demo/sync")).json()["ok"]
-    [item] = await c.items.query(plugin="demo")
+    [item] = await c.of(1).items.query(plugin="demo")
     assert item["title"] == "Gate code" and item["data"]["sender"].startswith("Alice")
-    assert [e.type for e in c.bus.recent] == ["item.created"]
-    [hit] = await c.vectors.search("garage gate code", kinds=["item"], k=1)
+    assert [e.type for e in c.of(1).bus.recent] == ["item.created"]
+    [hit] = await c.of(1).vectors.search("garage gate code", kinds=["item"], k=1)
     assert "4821" in hit.text and hit.text.startswith("[item from demo]")
 
     await client.post("/api/plugins/demo/sync")  # unchanged: no new event, no re-embed
-    assert len(c.bus.recent) == 1
+    assert len(c.of(1).bus.recent) == 1
 
-    counts = await c.items.upsert("demo", [Item(external_id="1", type="item", title="Gate code v2")])
+    counts = await c.of(1).items.upsert("demo", [Item(external_id="1", type="item", title="Gate code v2")])
     assert counts == {"created": 0, "updated": 1, "unchanged": 0, "excluded": 0}
-    assert c.bus.recent[-1].type == "item.updated"
+    assert c.of(1).bus.recent[-1].type == "item.updated"
 
     assert (await client.delete("/api/plugins/demo/data")).json() == {"removed": 1}
-    assert await c.items.query(plugin="demo") == []
-    assert await c.vectors.search("garage gate code", kinds=["item"]) == []
+    assert await c.of(1).items.query(plugin="demo") == []
+    assert await c.of(1).vectors.search("garage gate code", kinds=["item"]) == []
 
 
 async def test_privacy_exclusions_apply_to_new_and_existing_data(client, app, plugin_dir):
@@ -324,16 +324,16 @@ async def test_privacy_exclusions_apply_to_new_and_existing_data(client, app, pl
     await client.post("/api/plugins/demo/enable")
     await client.post("/api/plugins/demo/sync")
     c = app.state.c
-    assert len(await c.items.query()) == 1
+    assert len(await c.of(1).items.query()) == 1
 
     # Adding a rule removes data that is already stored (and its embedding)...
     r = await client.patch("/api/settings", json={"values": {"privacy.exclude_senders": ["friends.example"]}})
     assert r.status_code == 200 and r.json()["privacy"]["exclude_senders"] == ["friends.example"]
-    assert await c.items.query() == []
-    assert await c.vectors.search("garage gate code", kinds=["item"]) == []
+    assert await c.of(1).items.query() == []
+    assert await c.of(1).vectors.search("garage gate code", kinds=["item"]) == []
     # ...and keeps it out on the next sync.
     await client.post("/api/plugins/demo/sync")
-    assert await c.items.query() == []
+    assert await c.of(1).items.query() == []
 
 
 # -- approval gate (prompt-injection defence) -----------------------------------------
@@ -444,7 +444,7 @@ async def test_webhooks_require_the_plugin_token(client, app, plugin_dir):
             "/api/plugins/hooked/webhook", content=b"via header", headers={"X-Goog-Channel-Token": token}
         )
         assert r.status_code == 200
-    assert '"body": "via header"' in (await app.state.c.tools.call("hooked_last", {}, None))[1]
+    assert '"body": "via header"' in (await app.state.c.of(1).tools.call("hooked_last", {}, None))[1]
 
 
 # -- example plugins ------------------------------------------------------------------
@@ -454,7 +454,7 @@ async def test_tasks_example_plugin(client, app, mock_llm):
     manager(app).app_config().plugins.dirs.append(str(REPO / "plugins"))
     await rescan(client)
     assert (await client.post("/api/plugins/tasks/enable")).json()["status"] == "running"
-    call = app.state.c.tools.call
+    call = app.state.c.of(1).tools.call
 
     import json
 
@@ -468,7 +468,7 @@ async def test_tasks_example_plugin(client, app, mock_llm):
     assert [t["title"] for t in tasks] == ["Renew passport", "Buy milk"]  # dated first
 
     assert (await call("tasks_complete", {"task_id": task_id}, None))[0]
-    assert app.state.c.bus.recent[-1].type == "tasks.completed"
+    assert app.state.c.of(1).bus.recent[-1].type == "tasks.completed"
     tasks = json.loads((await call("tasks_list", {}, None))[1])["tasks"]
     assert [t["title"] for t in tasks] == ["Buy milk"]
     assert (await call("tasks_complete", {"task_id": "nope"}, None))[0] is False
@@ -497,13 +497,13 @@ async def test_weather_example_plugin(client, app, web):
     assert info["status"] == "running"
 
     assert (await client.post("/api/plugins/weather/sync")).json()["ok"]
-    items = await app.state.c.items.query(plugin="weather")
+    items = await app.state.c.of(1).items.query(plugin="weather")
     assert len(items) == 3 and any("rain" in i["title"] for i in items)
-    rain = [e for e in app.state.c.bus.recent if e.type == "weather.rain_expected"]
+    rain = [e for e in app.state.c.of(1).bus.recent if e.type == "weather.rain_expected"]
     assert len(rain) == 1 and rain[0].payload["rain_chance_percent"] == 90
     await client.post("/api/plugins/weather/sync")  # alert only once per day
-    assert len([e for e in app.state.c.bus.recent if e.type == "weather.rain_expected"]) == 1
+    assert len([e for e in app.state.c.of(1).bus.recent if e.type == "weather.rain_expected"]) == 1
 
-    ok, out = await app.state.c.tools.call("weather_forecast", {"days": 2}, None)
+    ok, out = await app.state.c.of(1).tools.call("weather_forecast", {"days": 2}, None)
     assert ok and '"summary": "rain"' in out
     assert web.requests[-1].url.params["forecast_days"] == "2"

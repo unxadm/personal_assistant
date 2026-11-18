@@ -46,6 +46,30 @@ class ApiTest {
     }
 
     @Test
+    fun loginNamesTheAccountWhenGivenOne() = runBlocking {
+        server.enqueue(json("""{"ok":true}""").addHeader("Set-Cookie", "pa_session=fresh; HttpOnly; Path=/"))
+
+        Api(MemorySessionStore()).login(base, "hunter22", "", username = " Alice ")
+
+        assertEquals("""{"password":"hunter22","code":"","username":"Alice"}""", server.takeRequest().body.readUtf8())
+    }
+
+    @Test
+    fun anAdminSetPasswordIsRefusedWithAnExplanation() = runBlocking {
+        server.enqueue(
+            json("""{"ok":true,"user":{"id":2,"username":"bob","must_change_password":true}}""")
+                .addHeader("Set-Cookie", "pa_session=fresh; HttpOnly; Path=/"),
+        )
+        try {
+            Api(MemorySessionStore()).login(base, "temp", "", username = "bob")
+            fail("expected a failure")
+        } catch (e: ApiException) {
+            assertEquals(403, e.status)
+            assertTrue(e.message!!.contains("web app"))
+        }
+    }
+
+    @Test
     fun codeRequiredIsReportedAsIs() = runBlocking {
         server.enqueue(json("""{"detail":"code_required"}""", 401))
         try {

@@ -46,13 +46,18 @@ class ReminderNotFound(ReminderError):
 
 
 class ReminderService:
+    """One user's reminders."""
+
     def __init__(
         self,
         db: Database,
         notifier: Any,  # NotificationService
         get_config: Callable[[], AppConfig],
         clock: Callable[[], datetime] = utcnow,
+        *,
+        user_id: int,
     ):
+        self._user_id = user_id
         self._db = db
         self._notifier = notifier
         self._get_config = get_config
@@ -80,7 +85,7 @@ class ReminderService:
         }
 
     async def list(self, *, include_closed: bool = False, limit: int = 200) -> list[dict[str, Any]]:
-        stmt = select(Reminder)
+        stmt = select(Reminder).where(Reminder.user_id == self._user_id)
         if not include_closed:
             stmt = stmt.where(Reminder.status.in_(("scheduled", "fired")))
         stmt = stmt.order_by(Reminder.due_at).limit(limit)
@@ -91,10 +96,9 @@ class ReminderService:
         async with self._db.session() as s:
             return self.view(await self._load(s, reminder_id))
 
-    @staticmethod
-    async def _load(s, reminder_id: int) -> Reminder:
+    async def _load(self, s, reminder_id: int) -> Reminder:
         row = await s.get(Reminder, reminder_id)
-        if row is None:
+        if row is None or row.user_id != self._user_id:
             raise ReminderNotFound(f"no reminder with id {reminder_id}")
         return row
 
@@ -143,6 +147,7 @@ class ReminderService:
             raise ReminderError(f"urgency must be one of {', '.join(URGENCIES)}")
         due, rule, anchor = self._schedule(when, rrule, self._clock())
         row = Reminder(
+            user_id=self._user_id,
             text=text[:2000], due_at=due, next_at=due, rrule=rule, anchor=anchor,
             timezone=self._get_config().timezone, urgency=urgency, source=source,
         )
@@ -246,7 +251,10 @@ class ReminderService:
             ids = (
                 await s.scalars(
                     select(Reminder.id)
-                    .where(Reminder.status == "scheduled", Reminder.next_at <= now)
+                    .where(
+                        Reminder.user_id == self._user_id,
+                        Reminder.status == "scheduled", Reminder.next_at <= now,
+                    )
                     .order_by(Reminder.next_at)
                 )
             ).all()

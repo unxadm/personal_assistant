@@ -1,6 +1,6 @@
 # Personal Assistant
 
-A self-hosted, single-user assistant that works with any OpenAI-compatible LLM endpoint.
+A self-hosted assistant for one person or a few (a household, a small team) that works with any OpenAI-compatible LLM endpoint. Every person has their own private assistant on the same server.
 
 **Status: all six phases built.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
 design and [docs/SECURITY.md](docs/SECURITY.md) for what is protected and what is not.
@@ -9,6 +9,9 @@ design and [docs/SECURITY.md](docs/SECURITY.md) for what is protected and what i
 
 - Chat in a web UI (installable as a PWA) behind a password, with optional two-step sign-in
   (authenticator app and recovery codes).
+- Several people on one server ([Several users](#several-users)): each has their own
+  conversations, memory, reminders, connected Google accounts, notifications and settings,
+  and nobody (admins included) can read anyone else's.
 - Any OpenAI-compatible provider, with retries, exponential backoff and a fallback model.
 - Tool calling, with an automatic JSON-in-prompt fallback for models that lack it.
 - Long-term memory: the assistant saves facts about you; you can view, edit and delete them.
@@ -70,8 +73,8 @@ Edit `config.yaml` (model, timezone) and put your key in `.env`, then:
 set -a; . ./.env; set +a; .venv/bin/python -m assistant
 ```
 
-Open <http://127.0.0.1:8000>. The first visit asks you to set the password. Database
-migrations run automatically on start.
+Open <http://127.0.0.1:8000>. The first visit asks you to create the first account (a
+username and password); it is the admin. Database migrations run automatically on start.
 
 ### With Docker
 
@@ -85,7 +88,7 @@ Edit `config.yaml` and `.env`, then:
 docker compose up -d --build
 ```
 
-The first visit needs a one-time setup code as well as the new password, because the
+The first visit needs a one-time setup code as well as the new account, because the
 container listens on a network address:
 
 ```bash
@@ -233,17 +236,20 @@ going through a push service, so they can arrive a little late.
 
 ### Telegram
 
-1. In Telegram, message **@BotFather**, send `/newbot` and follow the prompts. It replies
-   with a token like `123456789:AA…`.
-2. In Settings → Notifications → Telegram, tick **Use Telegram**, paste the token, save.
-3. Open your new bot in Telegram and send `/start`. It replies with your chat ID.
-4. Enter that chat ID in Settings and save. Press **Send test**.
+One bot serves the whole server; each person links their own chat to it.
 
-From then on reminders arrive there with Done / Snooze buttons, and you can chat with the
-assistant in that chat (`/new` starts a fresh conversation). Only the chat ID you entered is
-served; anyone else who finds the bot gets no reply. The server polls Telegram, so it does
-not need to be reachable from the internet. Telegram can read what the bot sends and
-receives.
+1. An admin: in Telegram, message **@BotFather**, send `/newbot` and follow the prompts. It
+   replies with a token like `123456789:AA…`. Paste it under Settings → Notifications →
+   Telegram → Bot token (only admins see this field) and save.
+2. Everyone: tick **Use Telegram** under Settings → Notifications → Telegram, save, then open
+   the bot in Telegram and send `/start`. It replies with your chat ID.
+3. Enter that chat ID in Settings and save. Press **Send test**.
+
+From then on your reminders arrive there with Done / Snooze buttons, and you can chat with
+your assistant in that chat (`/new` starts a fresh conversation). A chat ID can be linked to
+one account only, and only linked chats are served; anyone else who finds the bot gets no
+reply. The server polls Telegram, so it does not need to be reachable from the internet.
+Telegram can read what the bot sends and receives.
 
 ### Email
 
@@ -251,7 +257,7 @@ Email is sent through the Gmail API from the Gmail account you connected, so the
 mail server or password to configure:
 
 1. On the **Plugins** page, open Gmail, turn on **Allow sending notification email**, save,
-   and reconnect the account. Google asks for one more permission, `gmail.send`, which can
+   and reconnect the account (each person connects their own). Google asks for one more permission, `gmail.send`, which can
    send mail but not read, change or delete it.
 2. Under **Settings → Notifications → Email**, turn email on. Mail goes to that Gmail
    address unless you enter another one under "Send to".
@@ -350,9 +356,43 @@ shows each server's status and tools, with a Reconnect button.
 ## Configuration
 
 Precedence: defaults < `config.yaml` < environment (`PA_` prefix, `__` between levels) <
-Settings page. The Settings page can change `llm.*`, `agent.*`, `privacy.*`,
-`notifications.*`, `briefing.*`, `proactive.*` and `timezone`;
-server, auth, OAuth client, database and MCP server settings are file/env only. See [config.example.yaml](config.example.yaml).
+Settings page. The Settings page can change two kinds of setting:
+
+- **Server-wide** (admins only): `llm.*`, `agent.*`, and the Telegram bot token and API base
+  and the web push contact under `notifications.*`.
+- **Personal** (every user, for themselves only): `privacy.*`, `briefing.*`, `proactive.*`,
+  `timezone` and the rest of `notifications.*`. Values in `config.yaml` are the defaults
+  everyone starts from; what someone saves overrides them for that person only. The two
+  values that say *who* is notified, `notifications.telegram.chat_id` and
+  `notifications.email.to`, apply to the owner (the first account) only, so a new account
+  never inherits someone else's chat or address.
+
+Server, auth, OAuth client, database and MCP server settings are file/env only. See [config.example.yaml](config.example.yaml).
+
+## Several users
+
+The first account created is the **owner** and an admin. Admins open the **People** tab to
+add accounts, disable them, reset passwords or two-step sign-in, make someone an admin, or
+delete an account and everything it owns. A new account gets a generated password (shown
+once) that its owner must change at the first sign-in.
+
+What is separate for every person: conversations, long-term memory and search, reminders,
+the suggestion inbox and briefings, notifications and their channels (push devices, the
+Telegram chat, the Gmail address), plugins with their settings and OAuth accounts, uploads,
+the activity log, and the personal settings above. What is shared: the server itself, the
+model endpoint and its key (so everyone's messages go to the same provider), MCP servers,
+installed plugin code, and the Telegram bot.
+
+Admins manage accounts and server settings; they cannot read other people's data through
+the app. They can, however, reset someone's password, so tell people that an admin of
+your server is trusted with access to the machine and the database file in any case. See
+[docs/SECURITY.md](docs/SECURITY.md). There is no self-registration. The Android app has a
+username field (empty is fine while there is one account); first-time password changes
+happen in the web app.
+
+Upgrading from a single-user install needs nothing: the migration turns the existing data
+into the first account (username `owner`) with the password and two-step sign-in you
+already had.
 
 ## Tests
 
@@ -363,8 +403,10 @@ server, auth, OAuth client, database and MCP server settings are file/env only. 
 The suite runs against an in-process mock OpenAI-compatible server
 ([tests/conftest.py](tests/conftest.py)); no network or API key is needed. It covers the
 plugin loader, reminder parsing and scheduling, the LLM adapter, an end-to-end reminder
-flow, the proactive engine, sign-in security ([tests/test_security.py](tests/test_security.py))
-and prompt injection ([tests/test_injection.py](tests/test_injection.py)).
+flow, the proactive engine, sign-in security ([tests/test_security.py](tests/test_security.py)),
+prompt injection ([tests/test_injection.py](tests/test_injection.py)), user isolation and
+account administration ([tests/test_multiuser.py](tests/test_multiuser.py)) and the
+upgrade from a single-user database ([tests/test_migration.py](tests/test_migration.py)).
 
 The Android client has its own tests: `cd android && ./gradlew testDebugUnitTest lintDebug`.
 
@@ -372,7 +414,7 @@ The Android client has its own tests: `cd android && ./gradlew testDebugUnitTest
 
 ```
 assistant/
-  core/     config, database + models, encryption, settings store
+  core/     config, database + models, encryption, settings store, user accounts
   llm/      OpenAI-compatible adapter, JSON tool-calling fallback
   memory/   long-term facts, embedding store + semantic search
   agent/    conversation pipeline, tool registry, built-in tools
@@ -384,7 +426,7 @@ assistant/
   scheduler/      tick loop, daily briefing
   proactive/      rules, model screening of mail, suggestion inbox, feedback
   audit/          audit log and undo
-  api/      FastAPI app, auth, REST routes
+  api/      FastAPI app, auth, REST routes, per-user service stacks (tenants.py)
   migrations/  Alembic
 plugins/    third-party plugins: _template, tasks, weather
 web/        React + Vite + Tailwind UI

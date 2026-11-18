@@ -1,6 +1,13 @@
 # Copy to config.yaml and edit. Every value can also be set with an environment variable:
 # PA_ prefix, "__" between levels — e.g. PA_LLM__CHAT__API_KEY, PA_TIMEZONE.
 # Precedence: defaults < config.yaml < environment < values saved in the Settings page.
+#
+# Several people can use one server. What you set here is the default every account starts
+# from; each person can then save their own values for timezone, privacy, notifications,
+# briefing and proactive settings in the Settings page. llm.*, agent.* and the Telegram bot
+# token are server-wide (admins only). The two values that say who is notified,
+# notifications.telegram.chat_id and notifications.email.to, apply to the first account
+# (the owner) only; other people set their own in Settings.
 
 timezone: Europe/Oslo        # IANA name; used for "now", reminders, quiet hours, briefing
 data_dir: ./data             # SQLite database and the encryption key live here
@@ -89,8 +96,8 @@ notifications:
     # contact: mailto:you@example.com   # sent to the push service; defaults to server.public_url
   telegram:
     enabled: false
-    bot_token: ""            # prefer PA_NOTIFICATIONS__TELEGRAM__BOT_TOKEN in .env
-    chat_id: ""              # only this chat is served; send /start to the bot to learn it
+    bot_token: ""            # one bot for the server; prefer PA_NOTIFICATIONS__TELEGRAM__BOT_TOKEN in .env
+    chat_id: ""              # the owner's chat (others link theirs in Settings); /start tells you yours
     chat: true               # also accept chat messages there (false = notifications only)
   email:                     # sent through the Gmail API from the connected Gmail account;
     enabled: false           # also turn on "Allow sending notification email" in the Gmail plugin

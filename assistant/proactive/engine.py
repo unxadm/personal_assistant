@@ -151,6 +151,8 @@ def parse_candidates(text: str) -> list[dict[str, Any]]:
 
 
 class ProactiveEngine:
+    """One user's proactive engine: their suggestion inbox, built from their own data."""
+
     def __init__(
         self,
         db: Database,
@@ -162,7 +164,10 @@ class ProactiveEngine:
         audit: Any,  # AuditService
         get_config: Callable[[], AppConfig],
         clock: Callable[[], datetime] = utcnow,
+        *,
+        user_id: int,
     ):
+        self._user_id = user_id
         self._db = db
         self._items = items
         self._llm = llm
@@ -480,7 +485,9 @@ class ProactiveEngine:
             created += bool(await self._file(finding, now))
         # Withdraw what no longer holds (the meeting moved, the email got answered).
         async with self._db.session() as s:
-            rows = (await s.scalars(select(Suggestion).where(Suggestion.status == "pending"))).all()
+            rows = (await s.scalars(select(Suggestion).where(
+                    Suggestion.user_id == self._user_id, Suggestion.status == "pending"
+                ))).all()
             for row in rows:
                 if row.dedupe_key.startswith(SWEEP_PREFIXES) and row.dedupe_key not in current:
                     row.status, row.resolved_at = "expired", now
@@ -559,7 +566,11 @@ class ProactiveEngine:
         if level == "off":
             return None
         async with self._db.session() as s:
-            if await s.scalar(select(Suggestion.id).where(Suggestion.dedupe_key == f.key)):
+            if await s.scalar(
+                select(Suggestion.id).where(
+                    Suggestion.user_id == self._user_id, Suggestion.dedupe_key == f.key
+                )
+            ):
                 return None
         bias = (await self.learning(now))["categories"].get(f.category, {}).get("bias", 0.0)
         confidence = max(0.0, min(1.0, f.confidence + bias))
@@ -571,7 +582,7 @@ class ProactiveEngine:
                 f"earlier feedback on {f.category.replace('_', ' ')} suggestions."
             )
         row = Suggestion(
-            category=f.category, title=f.title, detail=f.detail, reason=f.reason.strip(),
+            user_id=self._user_id, category=f.category, title=f.title, detail=f.detail, reason=f.reason.strip(),
             confidence=round(confidence, 2), source=f.source,
             proposed=None if level == "notify" else f.proposed,
             item_id=f.item_id, sender=f.sender, url=safe_url(f.url), dedupe_key=f.key[:300],
@@ -600,7 +611,10 @@ class ProactiveEngine:
         async with self._db.session() as s:
             async def since(delta: timedelta) -> int:
                 return await s.scalar(
-                    select(func.count()).select_from(Suggestion).where(Suggestion.notified_at >= now - delta)
+                    select(func.count()).select_from(Suggestion).where(
+                            Suggestion.user_id == self._user_id,
+                            Suggestion.notified_at >= now - delta,
+                        )
                 ) or 0
 
             return (
@@ -625,7 +639,7 @@ class ProactiveEngine:
             ref=f"suggestion:{row.id}", actions=actions,
         )
         async with self._db.session() as s:
-            fresh = await s.get(Suggestion, row.id)
+            fresh = await self._mine(s, row.id)
             if fresh is not None:
                 fresh.notified_at = now
                 await s.commit()
@@ -634,7 +648,10 @@ class ProactiveEngine:
         async with self._db.session() as s:
             rows = (
                 await s.scalars(
-                    select(Suggestion).where(Suggestion.status == "pending", Suggestion.expires_at < now)
+                    select(Suggestion).where(
+                        Suggestion.user_id == self._user_id,
+                        Suggestion.status == "pending", Suggestion.expires_at < now,
+                    )
                 )
             ).all()
             for row in rows:
@@ -643,7 +660,8 @@ class ProactiveEngine:
             # Bulk deletes: no in-session objects to keep in step.
             for stmt in (
                 delete(Suggestion).where(
-                    Suggestion.status != "pending", Suggestion.created_at < now - KEEP_RESOLVED
+                    Suggestion.user_id == self._user_id,
+                    Suggestion.status != "pending", Suggestion.created_at < now - KEEP_RESOLVED,
                 ),
                 delete(ProactiveMark).where(ProactiveMark.at < now - KEEP_RESOLVED),
             ):
@@ -651,6 +669,10 @@ class ProactiveEngine:
             await s.commit()
 
     # -- the inbox --------------------------------------------------------------------
+
+    async def _mine(self, s, suggestion_id: int) -> Suggestion | None:
+        row = await s.get(Suggestion, suggestion_id)
+        return row if row is not None and row.user_id == self._user_id else None
 
     def view(self, row: Suggestion) -> dict[str, Any]:
         proposed = row.proposed
@@ -676,7 +698,12 @@ class ProactiveEngine:
         }
 
     async def list(self, *, history: bool = False, limit: int = 100) -> list[dict[str, Any]]:
-        stmt = select(Suggestion).order_by(Suggestion.id.desc()).limit(max(1, min(limit, 300)))
+        stmt = (
+            select(Suggestion)
+            .where(Suggestion.user_id == self._user_id)
+            .order_by(Suggestion.id.desc())
+            .limit(max(1, min(limit, 300)))
+        )
         stmt = stmt.where(Suggestion.status != "pending" if history else Suggestion.status == "pending")
         async with self._db.session() as s:
             return [self.view(r) for r in (await s.scalars(stmt)).all()]
@@ -684,7 +711,9 @@ class ProactiveEngine:
     async def count(self) -> int:
         async with self._db.session() as s:
             return await s.scalar(
-                select(func.count()).select_from(Suggestion).where(Suggestion.status == "pending")
+                select(func.count()).select_from(Suggestion).where(
+                    Suggestion.user_id == self._user_id, Suggestion.status == "pending"
+                )
             ) or 0
 
     async def accept(self, suggestion_id: int, mode: str | None = None) -> dict[str, Any]:
@@ -697,7 +726,7 @@ class ProactiveEngine:
     ) -> dict[str, Any]:
         cfg, now = self._get_config(), aware(self._clock())
         async with self._db.session() as s:
-            row = await s.get(Suggestion, suggestion_id)
+            row = await self._mine(s, suggestion_id)
             if row is None:
                 raise LookupError("no such suggestion")
             if row.status != "pending":
@@ -751,14 +780,14 @@ class ProactiveEngine:
                 result = "Opened a chat to draft the reply."
         except BaseException:
             async with self._db.session() as s:
-                row = await s.get(Suggestion, suggestion_id)
+                row = await self._mine(s, suggestion_id)
                 if row is not None:
                     row.status = "pending"
                     await s.commit()
             raise
 
         async with self._db.session() as s:
-            row = await s.get(Suggestion, suggestion_id)
+            row = await self._mine(s, suggestion_id)
             assert row is not None
             row.status, row.result, row.resolved_at = status, result, now
             await s.commit()
@@ -766,7 +795,7 @@ class ProactiveEngine:
 
     async def dismiss(self, suggestion_id: int) -> dict[str, Any]:
         async with self._db.session() as s:
-            row = await s.get(Suggestion, suggestion_id)
+            row = await self._mine(s, suggestion_id)
             if row is None:
                 raise LookupError("no such suggestion")
             if row.status != "pending":
@@ -778,7 +807,7 @@ class ProactiveEngine:
     async def feedback(self, suggestion_id: int, useful: bool | None) -> dict[str, Any]:
         """Useful / not useful (``None`` clears it). Tunes later suggestions."""
         async with self._db.session() as s:
-            row = await s.get(Suggestion, suggestion_id)
+            row = await self._mine(s, suggestion_id)
             if row is None:
                 raise LookupError("no such suggestion")
             row.feedback = None if useful is None else "useful" if useful else "not_useful"
@@ -830,7 +859,10 @@ class ProactiveEngine:
                 await s.execute(
                     select(Suggestion.category, Suggestion.status, Suggestion.feedback,
                            Suggestion.proposed, Suggestion.sender)
-                    .where(Suggestion.created_at >= now - FEEDBACK_WINDOW, Suggestion.status != "pending")
+                    .where(
+                        Suggestion.user_id == self._user_id,
+                        Suggestion.created_at >= now - FEEDBACK_WINDOW, Suggestion.status != "pending",
+                    )
                 )
             ).all()
         cats: dict[str, dict[str, float]] = {}

@@ -40,7 +40,6 @@ from .sdk import Manifest, NeedsAuth, Notification, Plugin, PluginError
 log = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).resolve().parent / "builtin"
-PACKAGE = "pa_plugins"
 OAUTH_KEY = "_oauth"
 
 
@@ -75,6 +74,10 @@ def _with_defaults(schema: dict[str, Any], config: dict[str, Any]) -> dict[str, 
 
 
 class PluginManager:
+    """One user's plugins: whether each is on, its settings, secrets and OAuth tokens, its
+    synced data and the tools it adds. Plugin code is shared on disk; every user runs
+    their own instances of it, so one user's account is never visible to another's."""
+
     def __init__(
         self,
         db: Database,
@@ -84,7 +87,14 @@ class PluginManager:
         items: ItemStore,
         app_config: Callable[[], AppConfig],
         http: httpx.AsyncClient | None = None,
+        *,
+        user_id: int,
+        oauth: OAuthService | None = None,
     ):
+        self.user_id = user_id
+        # Imported plugin modules live under a name of their own, so users do not share
+        # (or purge) each other's loaded code.
+        self.package = f"pa_plugins_u{user_id}"
         self.db = db
         self.box = box
         self.tools = tools
@@ -93,7 +103,7 @@ class PluginManager:
         self.app_config = app_config
         self._own_http = http is None
         self.http = http or httpx.AsyncClient()
-        self.oauth = OAuthService(self.http)
+        self.oauth = oauth or OAuthService(self.http)
         self.records: dict[str, PluginRecord] = {}
         # Directories that look like plugins but failed to load: {path: error}.
         self.invalid: dict[str, str] = {}
@@ -153,9 +163,11 @@ class PluginManager:
     async def _load_state(self, record: PluginRecord) -> None:
         name = record.manifest.name
         async with self.db.session() as s:
-            row = await s.get(PluginState, name)
+            row = await s.get(PluginState, (self.user_id, name))
             if row is None:
-                row = PluginState(name=name, webhook_token=pysecrets.token_urlsafe(24))
+                row = PluginState(
+                    user_id=self.user_id, name=name, webhook_token=pysecrets.token_urlsafe(24)
+                )
                 s.add(row)
                 await s.commit()
         record.enabled = row.enabled
@@ -167,7 +179,7 @@ class PluginManager:
 
     async def _save(self, record: PluginRecord, *, secrets: bool = False) -> None:
         async with self.db.session() as s:
-            row = await s.get(PluginState, record.manifest.name)
+            row = await s.get(PluginState, (self.user_id, record.manifest.name))
             if row is None:
                 return
             row.enabled, row.config = record.enabled, record.config
@@ -341,12 +353,12 @@ class PluginManager:
     def _load_class(self, record: PluginRecord) -> type[Plugin]:
         """Import the plugin fresh from disk as ``pa_plugins.<name>.<module>``."""
         name = record.manifest.name
-        package = f"{PACKAGE}.{name}"
+        package = f"{self.package}.{name}"
         self._purge_modules(name)
-        if PACKAGE not in sys.modules:
-            root = types.ModuleType(PACKAGE)
+        if self.package not in sys.modules:
+            root = types.ModuleType(self.package)
             root.__path__ = []  # type: ignore[attr-defined]
-            sys.modules[PACKAGE] = root
+            sys.modules[self.package] = root
         pkg = types.ModuleType(package)
         pkg.__path__ = [str(record.path)]  # type: ignore[attr-defined]
         pkg.__package__ = package
@@ -359,9 +371,8 @@ class PluginManager:
             raise PluginError(f"{record.manifest.entrypoint} is not a Plugin subclass")
         return cls
 
-    @staticmethod
-    def _purge_modules(name: str) -> None:
-        package = f"{PACKAGE}.{name}"
+    def _purge_modules(self, name: str) -> None:
+        package = f"{self.package}.{name}"
         for mod in [m for m in sys.modules if m == package or m.startswith(package + ".")]:
             del sys.modules[mod]
 
@@ -541,17 +552,20 @@ class PluginManager:
             raise PluginError(f"plugin {name} does not use OAuth")
         client_id, _ = self._oauth_client(record)
         return self.oauth.begin(
-            name, record.manifest.oauth, client_id, self.required_scopes(record), redirect_uri
+            self.user_id, name, record.manifest.oauth, client_id,
+            self.required_scopes(record), redirect_uri,
         )
 
     async def oauth_finish(self, state: str, code: str) -> str:
         """Complete the flow started by :meth:`oauth_begin`. Returns the plugin name."""
         name = self.oauth.pending_plugin(state)
-        if name is None or name not in self.records:
+        if self.oauth.pending_user(state) != self.user_id or name is None or name not in self.records:
             raise PluginError("OAuth session expired or unknown; start the connection again")
         record = self.records[name]
         client_id, client_secret = self._oauth_client(record)
-        tokens = await self.oauth.finish(state, code, record.manifest.oauth, client_id, client_secret)
+        tokens = await self.oauth.finish(
+            self.user_id, state, code, record.manifest.oauth, client_id, client_secret
+        )
         previous = record.secrets.get(OAUTH_KEY) or {}
         tokens["refresh_token"] = tokens.get("refresh_token") or previous.get("refresh_token")
         record.secrets[OAUTH_KEY] = tokens
@@ -591,7 +605,9 @@ class PluginManager:
 
         removed = await self.items.delete_plugin(name)
         async with self.db.session() as s:
-            await s.execute(delete(PluginKV).where(PluginKV.plugin == name))
+            await s.execute(
+                delete(PluginKV).where(PluginKV.user_id == self.user_id, PluginKV.plugin == name)
+            )
             await s.commit()
         return removed
 

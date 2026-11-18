@@ -5,6 +5,15 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
+/** What the sign-in answer says about the account (only the part the app acts on). */
+@Serializable
+data class LoginResult(val user: LoginUser? = null)
+
+@Serializable
+data class LoginUser(
+    @SerialName("must_change_password") val mustChangePassword: Boolean = false,
+)
+
 @Serializable
 data class AuthStatus(
     @SerialName("setup_required") val setupRequired: Boolean = false,

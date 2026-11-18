@@ -101,7 +101,7 @@ async def test_unsent_uploads_are_cleaned_up(client, app, clock, mock_llm):
 
     # Uploads are stamped with the real time; a day later the unsent one is gone.
     from datetime import UTC, datetime, timedelta
-    await c.media.cleanup(datetime.now(UTC) + timedelta(hours=25))
+    await c.of(1).media.cleanup(datetime.now(UTC) + timedelta(hours=25))
     assert (await client.get(f"/api/attachments/{orphan}")).status_code == 404
     assert (await client.get(f"/api/attachments/{used}")).status_code == 200
 

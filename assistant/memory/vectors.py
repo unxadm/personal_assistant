@@ -51,9 +51,13 @@ def cosine_distance(a: list[float], b: list[float]) -> float:
 
 
 class VectorStore:
-    def __init__(self, db: Database, llm: LLMClient):
+    """One user's embeddings. Every query is limited to ``user_id``: a search can never
+    return another user's text."""
+
+    def __init__(self, db: Database, llm: LLMClient, user_id: int):
         self._db = db
         self._llm = llm
+        self._user_id = user_id
 
     @property
     def enabled(self) -> bool:
@@ -77,10 +81,13 @@ class VectorStore:
         async with self._db.session() as s:
             for (kind, ref_id, body, meta), vector in zip(entries, vectors, strict=True):
                 row = await s.scalar(
-                    select(Embedding).where(Embedding.kind == kind, Embedding.ref_id == ref_id)
+                    select(Embedding).where(
+                        Embedding.user_id == self._user_id,
+                        Embedding.kind == kind, Embedding.ref_id == ref_id,
+                    )
                 )
                 if row is None:
-                    row = Embedding(kind=kind, ref_id=ref_id)
+                    row = Embedding(user_id=self._user_id, kind=kind, ref_id=ref_id)
                     s.add(row)
                 row.text, row.model, row.dim = body[:MAX_CHARS], model, len(vector)
                 row.vector, row.meta, row.created_at = pack(vector), meta, utcnow()
@@ -95,7 +102,10 @@ class VectorStore:
             return
         async with self._db.session() as s:
             await s.execute(
-                delete(Embedding).where(Embedding.kind == kind, Embedding.ref_id.in_(ref_ids))
+                delete(Embedding).where(
+                    Embedding.user_id == self._user_id,
+                    Embedding.kind == kind, Embedding.ref_id.in_(ref_ids),
+                )
             )
             await s.commit()
 
@@ -122,9 +132,11 @@ class VectorStore:
             if self._db.vec_available:
                 sql = (
                     "SELECT kind, ref_id, text, meta, vec_distance_cosine(vector, :q) AS distance "
-                    "FROM embeddings WHERE model = :model AND dim = :dim"
+                    "FROM embeddings WHERE user_id = :uid AND model = :model AND dim = :dim"
                 )
-                params: dict[str, Any] = {"q": pack(qvec), "model": model, "dim": len(qvec)}
+                params: dict[str, Any] = {
+                    "q": pack(qvec), "model": model, "dim": len(qvec), "uid": self._user_id,
+                }
                 if kinds:
                     names = [f"k{i}" for i in range(len(kinds))]
                     sql += f" AND kind IN ({', '.join(':' + n for n in names)})"
@@ -136,7 +148,10 @@ class VectorStore:
                     Hit(r.kind, r.ref_id, r.text, float(r.distance), _json(r.meta)) for r in rows
                 ]
             else:
-                stmt = select(Embedding).where(Embedding.model == model, Embedding.dim == len(qvec))
+                stmt = select(Embedding).where(
+                    Embedding.user_id == self._user_id,
+                    Embedding.model == model, Embedding.dim == len(qvec),
+                )
                 if kinds:
                     stmt = stmt.where(Embedding.kind.in_(kinds))
                 rows = (await s.scalars(stmt)).all()

@@ -59,28 +59,40 @@ class Tool:
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    """Tools one user's assistant can call.
+
+    Every user has their own registry (their reminders, memory and plugins), chained to a
+    shared one that holds the server-wide tools (MCP servers). A tool call goes through
+    the user's registry, so it is audited in that user's log and nobody else's.
+    """
+
+    def __init__(self, parent: ToolRegistry | None = None) -> None:
         self._tools: dict[str, Tool] = {}
+        self._parent = parent
         # async (tool, arguments, ctx, ok, output): called after every tool call.
         self.audit: Callable[..., Awaitable[None]] | None = None
 
     def register(self, tool: Tool) -> None:
-        if tool.name in self._tools:
+        if tool.name in self._tools or (self._parent and self._parent.get(tool.name)):
             raise ValueError(f"tool {tool.name!r} already registered")
         self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool | None:
-        return self._tools.get(name)
+        tool = self._tools.get(name)
+        if tool is None and self._parent is not None:
+            return self._parent.get(name)
+        return tool
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
 
     def specs(self) -> list[dict[str, Any]]:
-        return [t.spec() for t in self._tools.values()]
+        own = [t.spec() for t in self._tools.values()]
+        return (self._parent.specs() if self._parent else []) + own
 
     async def call(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> tuple[bool, str]:
         """Run a tool. Returns ``(ok, result_text)``; errors are reported to the model, not raised."""
-        tool = self._tools.get(name)
+        tool = self.get(name)
         if tool is None:
             return False, json.dumps({"error": f"unknown tool {name!r}"})
         ok, output = await self._run(tool, arguments, ctx)

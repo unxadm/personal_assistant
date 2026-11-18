@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,11 +11,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ..agent.pipeline import ConversationNotFound
-from ..core.config import AUTO_CATEGORIES, PROACTIVE_LEVELS, is_overridable, is_secret_path
+from ..core.config import (
+    AUTO_CATEGORIES,
+    PROACTIVE_LEVELS,
+    is_secret_path,
+    is_server_setting,
+    is_user_setting,
+)
 from ..core.models import Conversation, Message
 from ..core.security import mask_secret
+from ..core.users import CurrentUser
 from ..llm.client import LLMClient, LLMError
-from .auth import container, require_auth
+from .auth import container, mine, require_admin, require_auth
 
 router = APIRouter(prefix="/api")
 authed = APIRouter(dependencies=[Depends(require_auth)])
@@ -42,9 +50,9 @@ class ChatBody(BaseModel):
 
 @authed.post("/chat")
 async def chat(body: ChatBody, request: Request):
-    c = container(request)
+    t = mine(request)
     try:
-        reply = await c.agent.handle(
+        reply = await t.agent.handle(
             body.text, body.conversation_id, channel="web", images=body.attachment_ids
         )
     except ConversationNotFound:
@@ -69,11 +77,16 @@ async def chat(body: ChatBody, request: Request):
 
 
 @authed.get("/conversations")
-async def list_conversations(request: Request):
+async def list_conversations(request: Request, user: CurrentUser = Depends(require_auth)):
     c = container(request)
     async with c.db.session() as s:
         rows = (
-            await s.scalars(select(Conversation).order_by(Conversation.updated_at.desc()).limit(200))
+            await s.scalars(
+                select(Conversation)
+                .where(Conversation.user_id == user.id)
+                .order_by(Conversation.updated_at.desc())
+                .limit(200)
+            )
         ).all()
     return [
         {"id": r.id, "title": r.title or "New conversation", "channel": r.channel,
@@ -83,10 +96,11 @@ async def list_conversations(request: Request):
 
 
 @authed.get("/conversations/{conv_id}/messages")
-async def list_messages(conv_id: int, request: Request):
+async def list_messages(conv_id: int, request: Request, user: CurrentUser = Depends(require_auth)):
     c = container(request)
     async with c.db.session() as s:
-        if await s.get(Conversation, conv_id) is None:
+        conv = await s.get(Conversation, conv_id)
+        if conv is None or conv.user_id != user.id:
             raise HTTPException(404, "Conversation not found")
         rows = (
             await s.scalars(
@@ -101,20 +115,22 @@ async def list_messages(conv_id: int, request: Request):
 
 
 @authed.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: int, request: Request):
-    c = container(request)
+async def delete_conversation(
+    conv_id: int, request: Request, user: CurrentUser = Depends(require_auth)
+):
+    c, t = container(request), mine(request)
     async with c.db.session() as s:
         conv = await s.get(Conversation, conv_id)
-        if conv is None:
+        if conv is None or conv.user_id != user.id:
             raise HTTPException(404, "Conversation not found")
         ids = (
             await s.scalars(select(Message.id).where(Message.conversation_id == conv_id))
         ).all()
-    await c.media.delete_for_messages(list(ids))
+    await t.media.delete_for_messages(list(ids))
     async with c.db.session() as s:
         await s.delete(await s.get(Conversation, conv_id))
         await s.commit()
-    await c.vectors.delete("message", [str(i) for i in ids])
+    await t.vectors.delete("message", [str(i) for i in ids])
     return {"ok": True}
 
 
@@ -138,17 +154,17 @@ def _fact(f) -> dict[str, Any]:
 
 @authed.get("/memory/facts")
 async def list_facts(request: Request):
-    return [_fact(f) for f in await container(request).memory.list_facts()]
+    return [_fact(f) for f in await mine(request).memory.list_facts()]
 
 
 @authed.post("/memory/facts", status_code=201)
 async def add_fact(body: FactBody, request: Request):
-    return _fact(await container(request).memory.add_fact(body.content, body.category, "user"))
+    return _fact(await mine(request).memory.add_fact(body.content, body.category, "user"))
 
 
 @authed.patch("/memory/facts/{fact_id}")
 async def update_fact(fact_id: int, body: FactPatch, request: Request):
-    fact = await container(request).memory.update_fact(fact_id, body.content, body.category)
+    fact = await mine(request).memory.update_fact(fact_id, body.content, body.category)
     if fact is None:
         raise HTTPException(404, "Fact not found")
     return _fact(fact)
@@ -156,7 +172,7 @@ async def update_fact(fact_id: int, body: FactPatch, request: Request):
 
 @authed.delete("/memory/facts/{fact_id}")
 async def delete_fact(fact_id: int, request: Request):
-    if not await container(request).memory.delete_fact(fact_id):
+    if not await mine(request).memory.delete_fact(fact_id):
         raise HTTPException(404, "Fact not found")
     return {"ok": True}
 
@@ -170,14 +186,22 @@ def _mask(data: Any, path: str = "") -> Any:
     return mask_secret(data) if is_secret_path(path) else data
 
 
-def _settings_view(c) -> dict[str, Any]:
-    cfg = c.config.config
-    return {
+def _settings_view(c, t, admin: bool) -> dict[str, Any]:
+    """What the settings page shows: the user's own effective settings, plus the
+    server-wide ones for admins."""
+    cfg = t.cfg()
+    notifications = _mask(cfg.notifications.model_dump(), "notifications")
+    server_wide = c.config.config
+    if not admin:
+        # Shared by everyone: members only need to know whether the bot exists.
+        notifications["telegram"].pop("bot_token", None)
+        notifications["telegram"].pop("api_base", None)
+        notifications["web_push"].pop("contact", None)
+    view: dict[str, Any] = {
         "timezone": cfg.timezone,
-        "llm": _mask(cfg.llm.model_dump(), "llm"),
-        "agent": cfg.agent.model_dump(),
+        "agent": {"name": server_wide.agent.name} if not admin else server_wide.agent.model_dump(),
         "privacy": cfg.privacy.model_dump(),
-        "notifications": _mask(cfg.notifications.model_dump(), "notifications"),
+        "notifications": notifications,
         "briefing": cfg.briefing.model_dump(),
         "proactive": {
             **cfg.proactive.model_dump(),
@@ -185,21 +209,30 @@ def _settings_view(c) -> dict[str, Any]:
             "levels": {c: cfg.proactive.level(c) for c in PROACTIVE_LEVELS},
             "auto_categories": list(AUTO_CATEGORIES),
         },
-        # Which values come from the settings UI rather than config.yaml / environment.
         # What the UI may offer: a microphone needs STT, "Listen" needs TTS.
         "capabilities": {"stt": c.llm.configured("stt"), "tts": c.llm.configured("tts")},
-        "overridden": sorted(c.config.overrides),
+        "telegram_bot": bool(server_wide.notifications.telegram.bot_token),
+        # Which values come from the settings UI rather than config.yaml / environment.
+        "overridden": sorted(
+            set(t.overrides) | (set(c.config.overrides) if admin else set())
+        ),
         "vector_search": {
-            "enabled": c.vectors.enabled,
+            "enabled": t.vectors.enabled,
             "backend": "sqlite-vec" if c.db.vec_available else "in-process",
         },
+        "admin": admin,
     }
+    if admin:
+        view["llm"] = _mask(server_wide.llm.model_dump(), "llm")
+    return view
 
 
-def _merge_values(overrides: dict[str, Any], values: dict[str, Any], prefix: str | None = None) -> None:
+def _merge_values(
+    overrides: dict[str, Any], values: dict[str, Any], allowed: Callable[[str], bool]
+) -> None:
     """Apply a {dotted.path: value} patch to an override set (null/"" removes)."""
     for path, value in values.items():
-        if not is_overridable(path) or (prefix and not path.startswith(prefix)):
+        if not allowed(path):
             raise HTTPException(422, f"{path!r} cannot be changed here")
         if is_secret_path(path) and isinstance(value, str) and value.startswith("…"):
             continue  # the masked placeholder was echoed back: leave the secret unchanged
@@ -215,25 +248,42 @@ class SettingsPatch(BaseModel):
 
 
 @authed.get("/settings")
-async def get_settings(request: Request):
-    return _settings_view(container(request))
+async def get_settings(request: Request, user: CurrentUser = Depends(require_auth)):
+    return _settings_view(container(request), mine(request), user.is_admin)
 
 
 @authed.patch("/settings")
-async def patch_settings(body: SettingsPatch, request: Request):
-    c = container(request)
-    overrides = c.config.overrides
-    _merge_values(overrides, body.values)
+async def patch_settings(
+    body: SettingsPatch, request: Request, user: CurrentUser = Depends(require_auth)
+):
+    """Save settings. Personal ones are saved for this user only; server-wide ones (the
+    model endpoint, the Telegram bot, ...) need an admin."""
+    c, t = container(request), mine(request)
+    server_values = {p: v for p, v in body.values.items() if is_server_setting(p)}
+    own_values = {p: v for p, v in body.values.items() if not is_server_setting(p)}
+    if server_values and not user.is_admin:
+        raise HTTPException(403, "Only an admin can change server-wide settings")
+
+    server_overrides, own_overrides = c.config.overrides, dict(t.overrides)
+    _merge_values(server_overrides, server_values, is_server_setting)
+    _merge_values(own_overrides, own_values, is_user_setting)
+    chat = own_values.get("notifications.telegram.chat_id")
+    if chat and c.tenants.chat_taken(str(chat).strip(), user.id):
+        raise HTTPException(409, "That Telegram chat is linked to another account")
     try:
-        c.config.build(overrides)
+        c.config.build(server_overrides)
+        t.preview(own_overrides)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
-    await c.settings.save_overrides(overrides)
-    c.config.apply_overrides(overrides)
-    if any(path.startswith("privacy.") for path in body.values):
-        # New exclusions apply to data that is already stored, not just future syncs.
-        await c.items.apply_privacy()
-    return _settings_view(c)
+    if server_values:
+        await c.settings.save_overrides(server_overrides)
+        c.config.apply_overrides(server_overrides)
+    if own_values:
+        await t.save_overrides(own_overrides)
+        if any(path.startswith("privacy.") for path in own_values):
+            # New exclusions apply to data that is already stored, not just future syncs.
+            await t.items.apply_privacy()
+    return _settings_view(c, t, user.is_admin)
 
 
 class TestBody(BaseModel):
@@ -243,14 +293,14 @@ class TestBody(BaseModel):
 
 
 @authed.post("/settings/llm/test")
-async def test_llm(body: TestBody, request: Request):
+async def test_llm(body: TestBody, request: Request, _: CurrentUser = Depends(require_admin)):
     c = container(request)
     if body.slot not in ("chat", "fallback", "vision", "stt", "tts", "embeddings"):
         raise HTTPException(422, "unknown slot")
     if not body.values:
         return await c.llm.test_connection(body.slot)
     overrides = c.config.overrides
-    _merge_values(overrides, body.values, prefix="llm.")
+    _merge_values(overrides, body.values, lambda p: p.startswith("llm."))
     try:
         preview = c.config.build(overrides)
     except ValueError as e:

@@ -11,7 +11,7 @@ from ..llm.client import LLMError
 from ..notifications.service import ChannelError
 from ..reminders.service import ReminderError, ReminderNotFound
 from ..reminders.tools import parse_quick
-from .auth import container, require_auth
+from .auth import container, mine, require_auth
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
@@ -51,13 +51,13 @@ class SnoozeBody(BaseModel):
 
 @router.get("/reminders")
 async def list_reminders(request: Request, all: bool = False):
-    return await container(request).reminders.list(include_closed=all)
+    return await mine(request).reminders.list(include_closed=all)
 
 
 @router.post("/reminders", status_code=201)
 async def create_reminder(body: ReminderBody, request: Request):
     try:
-        return await container(request).reminders.create(
+        return await mine(request).reminders.create(
             body.text, body.at, rrule=body.rrule, urgency=body.urgency
         )
     except ReminderError as e:
@@ -67,10 +67,10 @@ async def create_reminder(body: ReminderBody, request: Request):
 @router.post("/reminders/quick", status_code=201)
 async def quick_reminder(body: QuickBody, request: Request):
     """Create a reminder from natural language ("call mum on Sunday at 6")."""
-    c = container(request)
+    c, t = container(request), mine(request)
     try:
-        parsed = await parse_quick(c.llm, body.text, c.clock(), c.config.config)
-        return await c.reminders.create(parsed["text"], parsed["at"], rrule=parsed["rrule"])
+        parsed = await parse_quick(c.llm, body.text, c.clock(), t.cfg())
+        return await t.reminders.create(parsed["text"], parsed["at"], rrule=parsed["rrule"])
     except ReminderError as e:
         raise _fail(e) from None
     except LLMError as e:
@@ -80,7 +80,7 @@ async def quick_reminder(body: QuickBody, request: Request):
 @router.patch("/reminders/{reminder_id}")
 async def update_reminder(reminder_id: int, body: ReminderPatch, request: Request):
     try:
-        return await container(request).reminders.update(
+        return await mine(request).reminders.update(
             reminder_id, text=body.text, when=body.at, rrule=body.rrule, urgency=body.urgency
         )
     except ReminderError as e:
@@ -91,7 +91,7 @@ async def update_reminder(reminder_id: int, body: ReminderPatch, request: Reques
 async def snooze_reminder(reminder_id: int, request: Request, body: SnoozeBody | None = None):
     body = body or SnoozeBody()
     try:
-        return await container(request).reminders.snooze(
+        return await mine(request).reminders.snooze(
             reminder_id, minutes=body.minutes, until=body.until
         )
     except ReminderError as e:
@@ -101,7 +101,7 @@ async def snooze_reminder(reminder_id: int, request: Request, body: SnoozeBody |
 @router.post("/reminders/{reminder_id}/complete")
 async def complete_reminder(reminder_id: int, request: Request):
     try:
-        return await container(request).reminders.complete(reminder_id)
+        return await mine(request).reminders.complete(reminder_id)
     except ReminderError as e:
         raise _fail(e) from None
 
@@ -109,7 +109,7 @@ async def complete_reminder(reminder_id: int, request: Request):
 @router.delete("/reminders/{reminder_id}")
 async def delete_reminder(reminder_id: int, request: Request):
     try:
-        await container(request).reminders.delete(reminder_id)
+        await mine(request).reminders.delete(reminder_id)
     except ReminderError as e:
         raise _fail(e) from None
     return {"ok": True}
@@ -139,18 +139,17 @@ class ActionBody(BaseModel):
 
 @router.get("/notifications")
 async def notifications(request: Request, limit: int = 50):
-    return await container(request).notifier.recent(max(1, min(limit, 200)))
+    return await mine(request).notifier.recent(max(1, min(limit, 200)))
 
 
 @router.get("/notifications/channels")
 async def channels(request: Request):
-    c = container(request)
-    now = c.clock()
-    quiet = c.notifier.quiet_until(now)
+    t = mine(request)
+    quiet = t.notifier.quiet_until(container(request).clock())
     return {
-        "channels": await c.notifier.channel_status(),
-        "vapid_public_key": await c.webpush.public_key(),
-        "devices": await c.webpush.devices(),
+        "channels": await t.notifier.channel_status(),
+        "vapid_public_key": await t.webpush.public_key(),
+        "devices": await t.webpush.devices(),
         "quiet_until": quiet.isoformat() if quiet else None,
     }
 
@@ -158,7 +157,7 @@ async def channels(request: Request):
 @router.post("/notifications/test")
 async def test_channel(body: TestBody, request: Request):
     try:
-        await container(request).notifier.test(body.channel)
+        await mine(request).notifier.test(body.channel)
     except ChannelError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True}
@@ -167,13 +166,13 @@ async def test_channel(body: TestBody, request: Request):
 @router.post("/notifications/action")
 async def notification_action(body: ActionBody, request: Request):
     """Buttons on a push notification (called by the service worker)."""
-    return {"message": await container(request).notifier.handle_action(body.ref, body.action)}
+    return {"message": await mine(request).notifier.handle_action(body.ref, body.action)}
 
 
 @router.post("/push/subscribe")
 async def subscribe(body: SubscriptionBody, request: Request):
     try:
-        await container(request).webpush.subscribe(body.model_dump(), body.label)
+        await mine(request).webpush.subscribe(body.model_dump(), body.label)
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     return {"ok": True}
@@ -181,7 +180,7 @@ async def subscribe(body: SubscriptionBody, request: Request):
 
 @router.post("/push/unsubscribe")
 async def unsubscribe(body: UnsubscribeBody, request: Request):
-    await container(request).webpush.unsubscribe(body.endpoint)
+    await mine(request).webpush.unsubscribe(body.endpoint)
     return {"ok": True}
 
 
@@ -190,10 +189,10 @@ async def unsubscribe(body: UnsubscribeBody, request: Request):
 
 @router.get("/briefing")
 async def briefing(request: Request) -> dict[str, Any]:
-    service = container(request).briefing
+    service = mine(request).briefing
     return {"latest": await service.latest(), "history": await service.history()}
 
 
 @router.post("/briefing/run")
 async def run_briefing(request: Request):
-    return {"latest": await container(request).briefing.run()}
+    return {"latest": await mine(request).briefing.run()}

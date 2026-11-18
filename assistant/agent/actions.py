@@ -22,10 +22,13 @@ def as_dict(a: PendingAction) -> dict[str, Any]:
 
 
 class ActionService:
-    def __init__(self, db: Database, tools: ToolRegistry, audit: Any = None):
+    """One user's held actions. Approving runs the tool through that user's registry."""
+
+    def __init__(self, db: Database, tools: ToolRegistry, audit: Any = None, user_id: int = 0):
         self._db = db
         self._tools = tools
         self._audit = audit  # AuditService
+        self._user_id = user_id
 
     async def _log(self, actor: str, action: str, summary: str, row: PendingAction) -> None:
         if self._audit is not None:
@@ -43,7 +46,10 @@ class ActionService:
         reason: str = "outside content was involved",
     ) -> PendingAction:
         async with self._db.session() as s:
-            action = PendingAction(conversation_id=conversation_id, tool=tool, arguments=arguments)
+            action = PendingAction(
+                user_id=self._user_id, conversation_id=conversation_id, tool=tool,
+                arguments=arguments,
+            )
             s.add(action)
             await s.commit()
         await self._log(
@@ -56,7 +62,12 @@ class ActionService:
     async def list(
         self, status: str | None = None, conversation_id: int | None = None
     ) -> list[dict[str, Any]]:
-        stmt = select(PendingAction).order_by(PendingAction.id.desc()).limit(200)
+        stmt = (
+            select(PendingAction)
+            .where(PendingAction.user_id == self._user_id)
+            .order_by(PendingAction.id.desc())
+            .limit(200)
+        )
         if status:
             stmt = stmt.where(PendingAction.status == status)
         if conversation_id is not None:
@@ -68,7 +79,7 @@ class ActionService:
         """Approve (run the tool) or reject a pending action. None if it is not pending."""
         async with self._db.session() as s:
             action = await s.get(PendingAction, action_id)
-            if action is None or action.status != "pending":
+            if action is None or action.user_id != self._user_id or action.status != "pending":
                 return None
             # Claim it first so a double click cannot run the tool twice.
             action.status = "running" if approve else "rejected"

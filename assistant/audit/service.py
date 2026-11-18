@@ -81,8 +81,11 @@ def describe_call(name: str, arguments: dict[str, Any]) -> str:
 
 
 class AuditService:
-    def __init__(self, db: Database, clock: Callable[[], datetime] = utcnow):
+    """One user's audit log. Entries are written with, and read back by, ``user_id``."""
+
+    def __init__(self, db: Database, user_id: int, clock: Callable[[], datetime] = utcnow):
         self._db = db
+        self._user_id = user_id
         self._clock = clock
 
     async def record(
@@ -96,7 +99,7 @@ class AuditService:
         undo: dict[str, Any] | None = None,
     ) -> int:
         row = AuditEntry(
-            at=self._clock(), actor=actor, action=action[:80], summary=summary[:1000],
+            user_id=self._user_id, at=self._clock(), actor=actor, action=action[:80], summary=summary[:1000],
             change=change, detail=clip(detail or {}), undo=undo,
         )
         async with self._db.session() as s:
@@ -121,7 +124,12 @@ class AuditService:
     async def list(
         self, *, changes_only: bool = False, limit: int = 100, before_id: int | None = None
     ) -> list[dict[str, Any]]:
-        stmt = select(AuditEntry).order_by(AuditEntry.id.desc()).limit(max(1, min(limit, 500)))
+        stmt = (
+            select(AuditEntry)
+            .where(AuditEntry.user_id == self._user_id)
+            .order_by(AuditEntry.id.desc())
+            .limit(max(1, min(limit, 500)))
+        )
         if changes_only:
             stmt = stmt.where(AuditEntry.change.is_(True))
         if before_id:
@@ -133,7 +141,7 @@ class AuditService:
         """Reverse an entry. Raises LookupError / ValueError when that is not possible."""
         async with self._db.session() as s:
             row = await s.get(AuditEntry, entry_id)
-            if row is None:
+            if row is None or row.user_id != self._user_id:
                 raise LookupError("no such entry")
             if row.undone_at is not None:
                 raise ValueError("this was already undone")

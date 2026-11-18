@@ -1,6 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
 
+const LAST_USER = "pa.username";
+
+function lastUsername(): string {
+  try {
+    return localStorage.getItem(LAST_USER) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export default function Login({
   setup,
   needsSetupCode,
@@ -10,6 +20,7 @@ export default function Login({
   needsSetupCode: boolean;
   onDone: () => void;
 }) {
+  const [username, setUsername] = useState(setup ? "owner" : lastUsername());
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [setupCode, setSetupCode] = useState("");
@@ -28,7 +39,12 @@ export default function Login({
     setBusy(true);
     setError("");
     try {
-      await (setup ? api.setup(password, setupCode) : api.login(password, code));
+      await (setup ? api.setup(username, password, setupCode) : api.login(username, password, code));
+      try {
+        localStorage.setItem(LAST_USER, username.trim().toLowerCase());
+      } catch {
+        /* private mode: the name just is not remembered */
+      }
       onDone();
     } catch (err) {
       const message = (err as Error).message;
@@ -46,22 +62,35 @@ export default function Login({
   return (
     <div className="flex h-full items-center justify-center p-4">
       <form onSubmit={submit} className="card w-full max-w-sm space-y-3">
-        <h1 className="text-lg font-semibold">{setup ? "Set a password" : "Sign in"}</h1>
+        <h1 className="text-lg font-semibold">{setup ? "Create the first account" : "Sign in"}</h1>
         {setup && (
           <p className="text-sm text-slate-400">
-            First run. Choose the password that protects this assistant (10+ characters).
+            First run. This account is the admin: it can add other people later. Choose a password
+            (10+ characters).
           </p>
         )}
         {!askCode && (
-          <input
-            className="input"
-            type="password"
-            placeholder="Password"
-            autoFocus
-            autoComplete={setup ? "new-password" : "current-password"}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <>
+            <input
+              className="input"
+              placeholder="Username"
+              autoFocus={!username}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            <input
+              className="input"
+              type="password"
+              placeholder="Password"
+              autoFocus={!!username}
+              autoComplete={setup ? "new-password" : "current-password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </>
         )}
         {setup && (
           <input

@@ -77,7 +77,7 @@ async def mcp(app):
 
 
 def names(app) -> set[str]:
-    return {s["function"]["name"] for s in app.state.c.tools.specs()}
+    return {s["function"]["name"] for s in app.state.c.of(1).tools.specs()}
 
 
 def lines(log: Path) -> list[str]:
@@ -115,7 +115,7 @@ async def test_servers_cannot_be_added_from_the_settings_ui(client):
 
 async def test_tools_are_registered_and_offered_to_the_model(client, app, mcp, mock_llm):
     assert {"mcp_fake_echo", "mcp_fake_post_note", "mcp_fake_weird_name"} <= names(app)
-    spec = next(s for s in app.state.c.tools.specs() if s["function"]["name"] == "mcp_fake_echo")
+    spec = next(s for s in app.state.c.of(1).tools.specs() if s["function"]["name"] == "mcp_fake_echo")
     assert spec["function"]["description"].startswith("[from MCP server fake]")
     assert spec["function"]["parameters"]["type"] == "object"
     assert "$schema" not in spec["function"]["parameters"]
@@ -206,7 +206,7 @@ async def test_instructions_in_a_result_cannot_trigger_a_change(running, mock_ll
 async def test_server_errors_reach_the_model_as_failures(app, mcp):
     from assistant.agent.tools import ToolContext
 
-    tools = app.state.c.tools
+    tools = app.state.c.of(1).tools
     ok, out = await tools.call("mcp_fake_explode", {}, ToolContext(0))
     assert not ok and "explode" in out
     ok, _ = await tools.call("mcp_fake_echo", {"wrong": 1}, ToolContext(0))
@@ -233,7 +233,7 @@ async def test_calls_are_in_the_audit_log(client, app, mcp, mock_llm):
 async def test_the_apps_environment_is_not_passed_to_servers(app, mcp):
     from assistant.agent.tools import ToolContext
 
-    ok, out = await app.state.c.tools.call("mcp_fake_secrets_visible", {}, ToolContext(0))
+    ok, out = await app.state.c.of(1).tools.call("mcp_fake_secrets_visible", {}, ToolContext(0))
     assert ok and "PA_TEST_SECRET" not in out and "none" in out
 
 
@@ -247,7 +247,7 @@ async def test_a_server_that_will_not_start_does_not_stop_the_app(running):
 async def test_a_dropped_server_is_reconnected(app, mcp):
     from assistant.agent.tools import ToolContext
 
-    tools = app.state.c.tools
+    tools = app.state.c.of(1).tools
     ok, out = await tools.call("mcp_fake_die", {}, ToolContext(0))
     assert not ok
     srv = mcp._servers["fake"]
@@ -317,7 +317,7 @@ async def test_http_server_with_headers(running, http_server, mock_llm):
         assert seen and all(h.get("authorization") == "Bearer s3cret" for h in seen)
         from assistant.agent.tools import ToolContext
 
-        ok, out = await application.state.c.tools.call("mcp_remote_ping", {}, ToolContext(0))
+        ok, out = await application.state.c.of(1).tools.call("mcp_remote_ping", {}, ToolContext(0))
         assert ok and "pong" in out
 
 

@@ -25,6 +25,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     if (res.status === 401 && !path.startsWith("/auth/")) {
       window.dispatchEvent(new Event("pa:unauthorized"));
     }
+    // An admin-set password has to be changed first: the app shows that screen.
+    if (res.status === 403 && message === "password_change_required") {
+      window.dispatchEvent(new Event("pa:unauthorized"));
+    }
     throw new ApiError(res.status, message);
   }
   return res.json() as Promise<T>;
@@ -47,10 +51,30 @@ export interface AttachmentInfo {
   filename: string;
   size: number;
 }
+export interface AuthUser {
+  id: number;
+  username: string;
+  display_name: string;
+  role: "admin" | "member";
+  must_change_password: boolean;
+}
 export interface AuthStatus {
   setup_required: boolean;
   setup_code_required: boolean;
   authenticated: boolean;
+  user: AuthUser | null;
+}
+export interface UserInfo {
+  id: number;
+  username: string;
+  display_name: string;
+  role: "admin" | "member";
+  disabled: boolean;
+  owner: boolean;
+  must_change_password: boolean;
+  sessions: number;
+  created_at: string | null;
+  last_login_at: string | null;
 }
 export interface ConversationInfo {
   id: number;
@@ -157,15 +181,19 @@ export interface LLMSlot {
 }
 export interface Settings {
   timezone: string;
-  llm: Record<"chat" | "vision" | "stt" | "tts" | "embeddings", LLMSlot> & {
+  // Server-wide: only sent to admins.
+  llm?: Record<"chat" | "vision" | "stt" | "tts" | "embeddings", LLMSlot> & {
     max_retries: number;
   };
   agent: Record<string, string | number>;
+  admin: boolean;
+  // Whether the server has a Telegram bot at all (members cannot see its token).
+  telegram_bot: boolean;
   privacy: { exclude_labels: string[]; exclude_senders: string[]; exclude_calendars: string[] };
   notifications: {
-    web_push: { enabled: boolean; contact: string | null };
+    web_push: { enabled: boolean; contact?: string | null };
     email: { enabled: boolean; to: string | null };
-    telegram: { enabled: boolean; bot_token: string | null; chat_id: string | null; chat: boolean };
+    telegram: { enabled: boolean; bot_token?: string | null; chat_id: string | null; chat: boolean };
     default_channels: string[];
     categories: Record<string, string[]>;
     quiet_hours: { enabled: boolean; start: string; end: string };
@@ -297,8 +325,10 @@ export interface Briefing {
 
 export const api = {
   authStatus: () => request<AuthStatus>("GET", "/auth/status"),
-  setup: (password: string, setup_code = "") => request("POST", "/auth/setup", { password, setup_code }),
-  login: (password: string, code = "") => request("POST", "/auth/login", { password, code }),
+  setup: (username: string, password: string, setup_code = "") =>
+    request("POST", "/auth/setup", { username, password, setup_code }),
+  login: (username: string, password: string, code = "") =>
+    request("POST", "/auth/login", { username, password, code }),
   security: () =>
     request<{ totp_enabled: boolean; recovery_codes_left: number; sessions: number }>("GET", "/auth/security"),
   changePassword: (current: string, next: string) => request("POST", "/auth/password", { current, new: next }),
@@ -309,6 +339,18 @@ export const api = {
   newRecoveryCodes: (password: string) =>
     request<{ recovery_codes: string[] }>("POST", "/auth/totp/recovery-codes", { password }),
   logout: () => request("POST", "/auth/logout"),
+  users: () => request<UserInfo[]>("GET", "/users"),
+  createUser: (body: { username: string; display_name: string; role: string; password: string }) =>
+    request<{ user: UserInfo; temporary_password: string | null }>("POST", "/users", body),
+  updateUser: (
+    id: number,
+    body: { display_name?: string; role?: string; disabled?: boolean; password?: string },
+  ) => request<UserInfo>("PATCH", `/users/${id}`, body),
+  resetUserPassword: (id: number, password: string) =>
+    request<{ temporary_password: string }>("POST", `/users/${id}/reset-password`, { password }),
+  resetUserTwoStep: (id: number, password: string) =>
+    request("POST", `/users/${id}/reset-two-step`, { password }),
+  deleteUser: (id: number, password: string) => request("DELETE", `/users/${id}`, { password }),
 
   conversations: () => request<ConversationInfo[]>("GET", "/conversations"),
   messages: (id: number) => request<ChatMessage[]>("GET", `/conversations/${id}/messages`),

@@ -290,8 +290,23 @@ def app_config(tmp_path) -> dict[str, Any]:
     return base_config(tmp_path)
 
 
+PASSWORD = "correct horse battery"
+
+
+async def add_user(application, username: str, *, role: str = "member", password: str = PASSWORD):
+    """Create an account (and its services) directly, without a sign-in."""
+    c = application.state.c
+    user = await c.users.create(username, password, role=role, display_name=username.capitalize())
+    if c.tenants.shared.owner_id is None:
+        c.tenants.shared.owner_id = user.id
+    await c.tenants.add(user)
+    return user
+
+
 @pytest.fixture
-async def app(app_config, mock_llm, web, plugin_dir, clock, mailer):
+async def app(app_config, mock_llm, web, plugin_dir, clock, mailer, request):
+    """A started app with one account, the owner (user 1, an admin). Tests marked
+    ``first_run`` get an app with no accounts instead."""
     config = ConfigService(app_config)
     application = create_app(
         config, llm_http_client=mock_llm.http_client(), plugin_http_client=web.client(),
@@ -299,17 +314,31 @@ async def app(app_config, mock_llm, web, plugin_dir, clock, mailer):
         clock=clock, migrate=False, secret_key="test-secret",
     )
     async with application.router.lifespan_context(application):
+        if not request.node.get_closest_marker("first_run"):
+            await add_user(application, "owner", role="admin")
         yield application
+
+
+def browser(app) -> httpx.AsyncClient:
+    """A browser with no cookies."""
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+async def sign_in(app, username: str = "owner", password: str = PASSWORD) -> httpx.AsyncClient:
+    c = browser(app)
+    r = await c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return c
 
 
 @pytest.fixture
 async def client(app):
-    """Authenticated HTTP client for the app."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        r = await c.post("/api/auth/setup", json={"password": "correct horse battery"})
-        assert r.status_code == 200, r.text
+    """Authenticated HTTP client for the app, signed in as the owner."""
+    c = await sign_in(app)
+    try:
         yield c
+    finally:
+        await c.aclose()
 
 
 BOT_TOKEN = "123456:TEST-bot-token-abcdefghijklmnop"

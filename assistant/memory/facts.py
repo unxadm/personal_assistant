@@ -12,12 +12,21 @@ KIND = "fact"
 
 
 class MemoryService:
-    def __init__(self, db: Database, vectors: VectorStore):
+    def __init__(self, db: Database, vectors: VectorStore, user_id: int):
         self._db = db
         self._vectors = vectors
+        self._user_id = user_id
+
+    async def _mine(self, s, fact_id: int) -> MemoryFact | None:
+        fact = await s.get(MemoryFact, fact_id)
+        return fact if fact is not None and fact.user_id == self._user_id else None
 
     async def list_facts(self, limit: int | None = None) -> list[MemoryFact]:
-        stmt = select(MemoryFact).order_by(MemoryFact.updated_at.desc(), MemoryFact.id.desc())
+        stmt = (
+            select(MemoryFact)
+            .where(MemoryFact.user_id == self._user_id)
+            .order_by(MemoryFact.updated_at.desc(), MemoryFact.id.desc())
+        )
         if limit:
             stmt = stmt.limit(limit)
         async with self._db.session() as s:
@@ -30,10 +39,17 @@ class MemoryService:
         if not content:
             raise ValueError("fact content is empty")
         async with self._db.session() as s:
-            existing = await s.scalar(select(MemoryFact).where(MemoryFact.content == content))
+            existing = await s.scalar(
+                select(MemoryFact).where(
+                    MemoryFact.user_id == self._user_id, MemoryFact.content == content
+                )
+            )
             if existing is not None:
                 return existing
-            fact = MemoryFact(content=content, category=category or "general", source=source)
+            fact = MemoryFact(
+                user_id=self._user_id, content=content, category=category or "general",
+                source=source,
+            )
             s.add(fact)
             await s.commit()
         await self._vectors.upsert(KIND, str(fact.id), content, {"category": fact.category})
@@ -43,7 +59,7 @@ class MemoryService:
         self, fact_id: int, content: str | None = None, category: str | None = None
     ) -> MemoryFact | None:
         async with self._db.session() as s:
-            fact = await s.get(MemoryFact, fact_id)
+            fact = await self._mine(s, fact_id)
             if fact is None:
                 return None
             if content is not None:
@@ -59,7 +75,7 @@ class MemoryService:
 
     async def delete_fact(self, fact_id: int) -> bool:
         async with self._db.session() as s:
-            fact = await s.get(MemoryFact, fact_id)
+            fact = await self._mine(s, fact_id)
             if fact is None:
                 return False
             await s.delete(fact)

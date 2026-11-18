@@ -202,7 +202,7 @@ async def info(client, name: str) -> dict[str, Any]:
 
 
 def call(app, tool_name: str, **arguments: Any):
-    return app.state.c.tools.call(tool_name, arguments, None)
+    return app.state.c.of(1).tools.call(tool_name, arguments, None)
 
 
 # -- OAuth ----------------------------------------------------------------------------
@@ -231,7 +231,7 @@ async def test_oauth_flow_requests_minimal_scopes_and_stores_tokens_encrypted(cl
     assert connected["status"] == "running" and connected["oauth"]["connected"]
     assert "gmail_search" in connected["tools"]
     async with app.state.c.db.session() as s:
-        row = await s.get(PluginState, "gmail")
+        row = await s.get(PluginState, (1, "gmail"))
     assert "rt-1" not in row.secrets and "at-1" not in row.secrets
 
 
@@ -251,7 +251,8 @@ async def test_oauth_callback_rejects_unknown_state_and_provider_errors(client, 
 
 
 async def test_oauth_start_needs_client_credentials(client, app):
-    app.state.c.config.config.oauth.clear()
+    app.state.c.config._base.pop("oauth", None)  # the client id lives in the server-wide config
+    app.state.c.config.version += 1
     r = await client.get("/api/plugins/gmail/oauth/start")
     assert r.status_code == 422 and "oauth.google.client_id" in r.json()["detail"]
     assert (await info(client, "gmail"))["oauth"]["client_configured"] is False
@@ -260,7 +261,7 @@ async def test_oauth_start_needs_client_credentials(client, app):
 async def test_tokens_refresh_on_expiry_and_on_401(client, app, google):
     await client.post("/api/plugins/gmail/enable")
     await connect(client, "gmail")
-    record = app.state.c.plugins.get("gmail")
+    record = app.state.c.of(1).plugins.get("gmail")
 
     record.secrets["_oauth"]["expires_at"] = 0  # expired
     assert (await call(app, "gmail_search", query="anything"))[0]
@@ -316,7 +317,7 @@ async def test_notification_email_goes_out_through_gmail_and_is_opt_in(client, a
     await connect(client, "gmail")
     status = await email_channel()
     assert not status["ready"] and "Allow sending notification email" in status["detail"]
-    note = await c.notifier.notify(category="briefing", title="Morning", body="Two meetings.")
+    note = await c.of(1).notifier.notify(category="briefing", title="Morning", body="Two meetings.")
     assert note["channels"] == {} and google.sent == []
 
     # Turning it on asks for the send-only scope, and needs the account reconnected.
@@ -331,7 +332,7 @@ async def test_notification_email_goes_out_through_gmail_and_is_opt_in(client, a
     }
 
     # To the account's own address by default, from that account, as plain text.
-    note = await c.notifier.notify(category="briefing", title="Morning", body="Two meetings.", url="/?tab=briefing")
+    note = await c.of(1).notifier.notify(category="briefing", title="Morning", body="Two meetings.", url="/?tab=briefing")
     assert note["channels"] == {"email": "ok"}
     message = decoded(google.sent[0])
     assert message["To"] == "me@example.com" and message["From"] == "me@example.com"
@@ -344,7 +345,7 @@ async def test_notification_email_goes_out_through_gmail_and_is_opt_in(client, a
     assert decoded(google.sent[1])["To"] == "work@example.org"
 
     # The model still has no way to send mail: there is no such tool.
-    assert not [name for name in c.tools._tools if "send" in name]
+    assert not [name for name in c.of(1).tools._tools if "send" in name]
 
     # Old SMTP settings in a config file are ignored rather than refused.
     from assistant.core.config import EmailConfig
@@ -372,7 +373,7 @@ async def test_gmail_sync_imports_classifies_and_respects_exclusions(client, app
     await connect(client, "gmail")
     assert (await client.post("/api/plugins/gmail/sync")).json()["ok"]
 
-    items = {i["external_id"]: i for i in await c.items.query(plugin="gmail")}
+    items = {i["external_id"]: i for i in await c.of(1).items.query(plugin="gmail")}
     assert set(items) == {"m1", "m2"}  # promotions skipped, excluded sender and label dropped
     bill = items["m1"]
     assert bill["type"] == "message" and bill["title"] == "Invoice 4411 from Acme"
@@ -387,7 +388,7 @@ async def test_gmail_sync_imports_classifies_and_respects_exclusions(client, app
     assert "package" in shipped["data"]["signals"]["categories"]
 
     # Synced mail is searchable.
-    [hit] = await c.vectors.search("Acme invoice amount due", kinds=["item"], k=1)
+    [hit] = await c.of(1).vectors.search("Acme invoice amount due", kinds=["item"], k=1)
     assert "Invoice 4411" in hit.text
 
 
@@ -397,7 +398,7 @@ async def test_gmail_incremental_sync_and_expired_history(client, app, google, w
     await client.post("/api/plugins/gmail/enable")
     await connect(client, "gmail")
     await client.post("/api/plugins/gmail/sync")
-    assert len(await c.items.query(plugin="gmail")) == 1
+    assert len(await c.of(1).items.query(plugin="gmail")) == 1
 
     # New mail, a label change, and a deletion arrive through the history API.
     google.messages["m2"] = gmail_message("m2", "Second", "new mail")
@@ -410,7 +411,7 @@ async def test_gmail_incremental_sync_and_expired_history(client, app, google, w
     ]
     listing_calls = len(web.sent("GET", "/messages?"))
     await client.post("/api/plugins/gmail/sync")
-    items = {i["external_id"]: i for i in await c.items.query(plugin="gmail")}
+    items = {i["external_id"]: i for i in await c.of(1).items.query(plugin="gmail")}
     assert set(items) == {"m1", "m2"} and items["m1"]["data"]["unread"] is False
     assert len(web.sent("GET", "/messages?")) == listing_calls  # no full re-listing
     assert web.sent("GET", "/history")[-1].url.params["startHistoryId"] == "100"
@@ -419,7 +420,7 @@ async def test_gmail_incremental_sync_and_expired_history(client, app, google, w
     google.history_expired = True
     google.messages["m4"] = gmail_message("m4", "Later", "after the gap")
     assert (await client.post("/api/plugins/gmail/sync")).json()["ok"]
-    assert "m4" in {i["external_id"] for i in await c.items.query(plugin="gmail")}
+    assert "m4" in {i["external_id"] for i in await c.of(1).items.query(plugin="gmail")}
 
 
 async def test_gmail_tools_search_read_and_draft(client, app, google, web):
@@ -468,8 +469,8 @@ async def test_gmail_push_registers_watch_and_webhook_triggers_sync(client, app,
     push = {"message": {"data": base64.b64encode(b'{"emailAddress":"me@example.com","historyId":"150"}').decode()}}
     r = await client.post(url.removeprefix("https://assistant.test"), json=push)
     assert r.status_code == 200
-    await app.state.c.plugins.drain()
-    assert [i["title"] for i in await app.state.c.items.query(plugin="gmail")] == ["Pushed"]
+    await app.state.c.of(1).plugins.drain()
+    assert [i["title"] for i in await app.state.c.of(1).items.query(plugin="gmail")] == ["Pushed"]
     assert len(google.watches) == 1  # still valid: not re-registered on every sync
 
 
@@ -512,10 +513,10 @@ async def test_calendar_sync_normalizes_and_removes_cancelled_events(client, app
     # Push channel opened because the public URL is HTTPS; the token authenticates pushes.
     [watch] = google.watches
     assert watch["address"] == "https://assistant.test/api/plugins/google_calendar/webhook"
-    assert watch["token"] == c.plugins.get("google_calendar").webhook_token
+    assert watch["token"] == c.of(1).plugins.get("google_calendar").webhook_token
 
     assert (await client.post("/api/plugins/google_calendar/sync")).json()["ok"]
-    items = {i["external_id"]: i for i in await c.items.query(plugin="google_calendar")}
+    items = {i["external_id"]: i for i in await c.of(1).items.query(plugin="google_calendar")}
     assert set(items) == {f"primary:{x}" for x in "abcde"}
     lunch = items["primary:c"]
     assert lunch["type"] == "event" and lunch["starts_at"] == f"{MONDAY}T13:00:00+00:00"
@@ -530,25 +531,25 @@ async def test_calendar_sync_normalizes_and_removes_cancelled_events(client, app
         {"id": "b", "status": "cancelled"},
     ]
     await client.post("/api/plugins/google_calendar/sync")
-    items = {i["external_id"]: i for i in await c.items.query(plugin="google_calendar")}
+    items = {i["external_id"]: i for i in await c.of(1).items.query(plugin="google_calendar")}
     assert "primary:b" not in items and items["primary:a"]["title"] == "Standup (moved)"
-    events = [e.type for e in c.bus.recent]
+    events = [e.type for e in c.of(1).bus.recent]
     assert events.count("item.created") == 5 and "item.updated" in events and "item.deleted" in events
 
 
 async def test_calendar_push_webhook_triggers_sync(client, app, google):
     await calendar_ready(client, google)
     google.events["primary"] = busy_day()[:1]
-    token = app.state.c.plugins.get("google_calendar").webhook_token
+    token = app.state.c.of(1).plugins.get("google_calendar").webhook_token
     path = "/api/plugins/google_calendar/webhook"
     # The initial "sync" ping is acknowledged but ignored.
     r = await client.post(path, headers={"X-Goog-Channel-Token": token, "X-Goog-Resource-State": "sync"})
     assert r.status_code == 200
-    await app.state.c.plugins.drain()
-    assert await app.state.c.items.query(plugin="google_calendar") == []
+    await app.state.c.of(1).plugins.drain()
+    assert await app.state.c.of(1).items.query(plugin="google_calendar") == []
     r = await client.post(path, headers={"X-Goog-Channel-Token": token, "X-Goog-Resource-State": "exists"})
-    await app.state.c.plugins.drain()
-    assert len(await app.state.c.items.query(plugin="google_calendar")) == 1
+    await app.state.c.of(1).plugins.drain()
+    assert len(await app.state.c.of(1).items.query(plugin="google_calendar")) == 1
     assert (await client.post(path, headers={"X-Goog-Channel-Token": "wrong"})).status_code == 404
 
 
@@ -606,7 +607,7 @@ async def test_calendar_write_tools(client, app, google):
     assert (await call(app, "google_calendar_update_event", event_id="a"))[0] is False
     assert (await call(app, "google_calendar_delete_event", event_id="a", notify_attendees=True))[0]
     assert google.calendar_writes[2][0] == "DELETE" and google.calendar_writes[2][3]["sendUpdates"] == "all"
-    await app.state.c.plugins.drain()
+    await app.state.c.of(1).plugins.drain()
 
 
 async def test_excluded_calendars_are_never_read(client, app, google, web):
@@ -675,4 +676,4 @@ async def test_injected_email_cannot_create_events_without_approval(client, app,
     # The user stays in control: approving is an explicit, separate step.
     done = (await client.post(f"/api/actions/{action_id}/approve")).json()
     assert done["status"] == "done" and len(google.calendar_writes) == 1
-    await app.state.c.plugins.drain()
+    await app.state.c.of(1).plugins.drain()

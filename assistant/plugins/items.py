@@ -84,7 +84,12 @@ def embed_text(plugin: str, item: Item) -> str:
 
 
 class ItemStore:
-    def __init__(self, db: Database, vectors: VectorStore, bus: EventBus, get_privacy):
+    """One user's synced items."""
+
+    def __init__(
+        self, db: Database, vectors: VectorStore, bus: EventBus, get_privacy, user_id: int
+    ):
+        self._user_id = user_id
         self._db = db
         self._vectors = vectors
         self._bus = bus
@@ -117,7 +122,8 @@ class ItemStore:
                 ).hexdigest()
                 row = await s.scalar(
                     select(ItemRow).where(
-                        ItemRow.plugin == plugin, ItemRow.external_id == item.external_id
+                        ItemRow.user_id == self._user_id,
+                        ItemRow.plugin == plugin, ItemRow.external_id == item.external_id,
                     )
                 )
                 if row is not None and row.content_hash == digest:
@@ -125,7 +131,9 @@ class ItemStore:
                     continue
                 created = row is None
                 if row is None:
-                    row = ItemRow(plugin=plugin, external_id=item.external_id)
+                    row = ItemRow(
+                        user_id=self._user_id, plugin=plugin, external_id=item.external_id
+                    )
                     s.add(row)
                 for key, value in fields.items():
                     setattr(row, key, value)
@@ -163,7 +171,8 @@ class ItemStore:
             rows = (
                 await s.scalars(
                     select(ItemRow).where(
-                        ItemRow.plugin == plugin, ItemRow.external_id.in_(external_ids)
+                        ItemRow.user_id == self._user_id,
+                        ItemRow.plugin == plugin, ItemRow.external_id.in_(external_ids),
                     )
                 )
             ).all()
@@ -184,7 +193,9 @@ class ItemStore:
         privacy: PrivacyConfig = self._get_privacy()
         doomed: dict[str, list[str]] = {}
         async with self._db.session() as s:
-            for row in (await s.scalars(select(ItemRow))).all():
+            for row in (
+                await s.scalars(select(ItemRow).where(ItemRow.user_id == self._user_id))
+            ).all():
                 data = row.data or {}
                 if is_excluded(
                     privacy, labels=row.labels or [], sender=data.get("sender"),
@@ -195,7 +206,13 @@ class ItemStore:
 
     async def delete_plugin(self, plugin: str) -> int:
         async with self._db.session() as s:
-            ids = (await s.scalars(select(ItemRow.external_id).where(ItemRow.plugin == plugin))).all()
+            ids = (
+                await s.scalars(
+                    select(ItemRow.external_id).where(
+                        ItemRow.user_id == self._user_id, ItemRow.plugin == plugin
+                    )
+                )
+            ).all()
         return await self.delete(plugin, list(ids))
 
     async def query(
@@ -210,7 +227,7 @@ class ItemStore:
     ) -> list[dict[str, Any]]:
         """Items filtered by plugin/type/time. ``after``/``before`` apply to the item's
         main timestamp (start, due, or occurrence)."""
-        stmt = select(ItemRow)
+        stmt = select(ItemRow).where(ItemRow.user_id == self._user_id)
         if plugin:
             stmt = stmt.where(ItemRow.plugin == plugin)
         if type:

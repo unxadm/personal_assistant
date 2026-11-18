@@ -5,36 +5,87 @@ of the whole codebase.
 
 ## What is at stake
 
-One person's mail, calendar, memory and conversation history, plus credentials that can
-read (and optionally write) their Google account, on a server they run themselves.
+Each user's mail, calendar, memory and conversation history, plus credentials that can
+read (and optionally write) their Google account, on a server run by someone they trust
+(often one of the users).
 
 ## Who it defends against
 
 | Attacker | Can do | Main defences |
 |---|---|---|
-| Someone on the network | Reach the web port | Password (Argon2), optional second factor, lockout, first-run setup code, HTTPS via your proxy |
+| Someone on the network | Reach the web port | Password (Argon2), optional second factor, per-username lockout, first-run setup code, HTTPS via your proxy |
+| Another user of the same server | Sign in, call the API with their own session | Every query is filtered by the signed-in user's id; admin endpoints check the role (below) |
 | Another website open in your browser | Make your browser send requests | SameSite=Strict cookie, same-origin check on writes, content security policy, no framing |
 | Someone who emails you, invites you, or controls a web page or image you show the assistant | Put text in front of the model | Fencing, approval gate, no-tool screening, validation (below) |
 | Someone who gets a copy of the database | Read stored rows | API keys, OAuth tokens, plugin secrets, push subscriptions and the TOTP secret are encrypted with a key that is not in the database |
-| A stranger on Telegram | Message the bot | Only the configured chat id is answered |
+| A stranger on Telegram | Message the bot | Only chat ids linked to an account are answered |
 
-Not defended against: someone with shell access to the server or the encryption key; a
-malicious plugin (plugins are code you install, see below); the LLM provider you choose,
-which sees whatever is sent to it.
+Not defended against: someone with shell access to the server or the encryption key (that
+includes whoever runs the server: see "Several users"); a malicious plugin (plugins are
+code you install, see below); the LLM provider you choose, which sees whatever is sent to
+it, from every user.
 
 ## Signing in
 
-- Password: Argon2id hash. Five wrong attempts lock sign-in for 15 minutes.
+- Accounts: a username and an Argon2id password hash. Five wrong attempts for one username
+  lock that username for 15 minutes (unknown usernames count too, so the lock does not
+  reveal which accounts exist), and the answer for an unknown name, a disabled account and
+  a wrong password is the same. A flood of failures across all names (100 in 15 minutes)
+  pauses sign-in for everyone briefly. Without a username, sign-in only works while there is
+  exactly one account (older clients).
 - Two-step sign-in (Settings → Sign-in security): TOTP, RFC 6238. A code is accepted once
   only, with one step of clock drift. Eight one-time recovery codes are shown at enrolment
   and stored as hashes. Turning it off or replacing the codes needs the password again.
 - Sessions: random 256-bit tokens, only their SHA-256 stored. HttpOnly, SameSite=Strict,
   and Secure whenever the request arrived over HTTPS. Changing the password or turning on
   two-step sign-in signs out every other device.
-- First run: until a password exists, anyone who can reach the port could set one. When
+- First run: until an account exists, anyone who can reach the port could create it. When
   the server listens on anything but loopback (always the case in Docker) the form also
-  needs a one-time code printed in the server log.
+  needs a one-time code printed in the server log. After that there is no self-registration:
+  admins create accounts.
+- Admin-created accounts and reset passwords are generated, shown once to the admin, and must
+  be changed at the first sign-in: until then the session can do nothing but change the
+  password.
 - Sign-ins, failed attempts and security changes appear under Activity.
+
+## Several users
+
+Everything a user owns carries their id: every table except `users`, `settings`, `messages`
+(which hang off a conversation) and `proactive_marks` (keyed by item) has a `user_id` with
+`ON DELETE CASCADE`, and a test fails if a new table is added without one.
+
+- **Services are built per user.** `api/tenants.py` constructs one stack (agent, memory,
+  vector store, items, reminders, notifier and channels, plugin manager, audit, approvals)
+  for each account with its id fixed. A request handler obtains the stack of the signed-in
+  user (`auth.mine`) and never receives an id from the client, so there is no parameter to
+  tamper with; ids in URLs (a conversation, a reminder, an action, an attachment) are
+  checked against the owner and answer 404 for someone else's. Embedding search, the
+  audit log, undo, pending actions and the approval gate are all scoped the same way.
+- **The tool registry is per user**, chained to a shared one that holds only server-wide
+  tools (MCP). A tool call is audited in the calling user's log. Plugin instances, their
+  secrets, OAuth tokens and cursors are per user; OAuth `state` is bound to the user who
+  started the flow, and a webhook token belongs to one user's plugin.
+- **Roles.** `admin` and `member`. Admins can add, disable, delete and reset accounts
+  (confirmed with their own password for anything that changes access or deletes) and change
+  server-wide settings (`llm.*`, `agent.*`, the Telegram bot token, the model connection
+  test, MCP reconnect). At least one active admin always remains and the owner cannot be
+  deleted. Admin actions are written to the audit logs of both the admin and the person
+  affected.
+- **What an admin can still do.** There is no endpoint that returns another user's data, but
+  an admin can reset someone's password and then sign in as them (the person must change
+  it at their next sign-in and sees "Your password was reset by ..." in their activity
+  log), and whoever runs the server can read the database and the key. Treat the server
+  admin as trusted with everything.
+- **Shared on purpose:** the model endpoint and key (every user's prompts go to the same
+  provider), MCP servers, plugin code, the VAPID key pair, the Telegram bot, the encryption
+  key. A push subscription belongs to one account at a time: subscribing from a browser
+  moves it there. A Telegram chat id can be linked to one account only; a chat linked to
+  two (via the database) is ignored.
+- **Who gets notified.** `notifications.telegram.chat_id` and `notifications.email.to` in
+  `config.yaml` or the environment apply to the owner only. Without that rule a new
+  account would inherit the owner's chat and address.
+- **Resource use is not isolated.** One user can use the model quota, the disk and the
+  scheduler's time; there are no per-user quotas.
 
 ## Prompt injection
 
@@ -76,8 +127,8 @@ approval card shows the tool and its arguments, not the model's description of t
   directory is set to mode 0700 and the key file to 0600.
 - The key is `PA_SECRET_KEY`, or `data/secret.key` if unset. Back it up separately from
   the database: without it the encrypted values cannot be read.
-- Outbound connections: the LLM endpoints you configure; Google, for the plugins you
-  connect; Telegram if you enable it (notification email goes through
+- Outbound connections: the LLM endpoints you configure; Google, for the plugins each user
+  connects; Telegram if you enable it (notification email goes through
   the Gmail API, i.e. to Google); your browser's push service
   (payload end-to-end encrypted). Nothing else. There is no telemetry.
 - Logs: a filter removes bearer tokens, API keys, passwords, Telegram bot tokens and the
@@ -145,9 +196,11 @@ program that runs with this app's permissions. So:
 
 ## Known gaps
 
-- The sign-in lockout is global, not per address: someone who can reach the login form
-  can keep you locked out by guessing. Put it behind a VPN or proxy-level rate limit if
-  that matters.
+- The sign-in lockout is per username, not per address: someone who can reach the login form
+  can keep a known user locked out by guessing their name. Put it behind a VPN or
+  proxy-level rate limit if that matters.
+- Users are not isolated from each other's resource use, and the server's operator can read
+  everything (see "Several users").
 - No passkeys.
 - Dependencies are given as minimum versions with no lock file, so two builds can differ.
 - The audit log is in the same database as everything else; it is a record for you, not

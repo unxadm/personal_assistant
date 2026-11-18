@@ -36,6 +36,7 @@ import assistant.client.data.normalizeBaseUrl
 class LoginModel(application: Application) : ScreenModel(application) {
     var url by mutableStateOf(app.session.baseUrl.orEmpty())
     var allowHttp by mutableStateOf(app.session.allowHttp)
+    var username by mutableStateOf("")
     var password by mutableStateOf("")
     var code by mutableStateOf("")
     var codeNeeded by mutableStateOf(false)
@@ -58,11 +59,11 @@ class LoginModel(application: Application) : ScreenModel(application) {
         }
         run {
             if (api.authStatus(base).setupRequired) {
-                error = "This server has no password yet. Open $base in a browser to finish the first-time setup, then sign in here."
+                error = "This server has no account yet. Open $base in a browser to finish the first-time setup, then sign in here."
                 return@run
             }
             try {
-                val token = api.login(base, password, code.trim())
+                val token = api.login(base, password, code.trim(), username)
                 app.session.save(base, token, allowHttp && base.startsWith("http://"))
                 password = ""
                 code = ""
@@ -111,6 +112,15 @@ fun LoginScreen(model: LoginModel = viewModel()) {
                     )
                 }
             }
+            OutlinedTextField(
+                value = model.username,
+                onValueChange = { model.username = it },
+                label = { Text("Username") },
+                supportingText = { Text("Leave empty if you are the only user of this server") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth(),
+            )
             OutlinedTextField(
                 value = model.password,
                 onValueChange = { model.password = it },

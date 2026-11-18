@@ -10,8 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+from ..core.users import CurrentUser
 from ..plugins.sdk import PluginError
-from .auth import container, require_auth
+from .auth import container, mine, require_admin, require_auth
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ authed = APIRouter(dependencies=[Depends(require_auth)])
 
 
 def _manager(request: Request):
-    manager = container(request).plugins
+    manager = mine(request).plugins
     if not manager.app_config().server.public_url:
         # Remember how the browser reaches us, for webhook and redirect URLs.
         manager.seen_base_url = str(request.base_url).rstrip("/")
@@ -123,11 +124,15 @@ async def oauth_callback(request: Request, state: str = "", code: str = "", erro
     """Where the provider sends the browser back. Not behind the session cookie (it is
     SameSite=Strict, so it is absent on this cross-site redirect); the unguessable ``state``
     issued to the signed-in user is the proof that this flow is ours."""
-    manager = container(request).plugins
-    plugin = manager.oauth.pending_plugin(state) or ""
+    c = container(request)
+    plugin = c.oauth.pending_plugin(state) or ""
+    owner = c.oauth.pending_user(state)
+    manager = c.tenants.get(owner).plugins if owner is not None and c.tenants.find(owner) else None
     result: dict[str, str] = {"tab": "plugins", "plugin": plugin}
     if error or not code:
         result |= {"oauth": "error", "message": error or "no authorization code returned"}
+    elif manager is None:
+        result |= {"oauth": "error", "message": "OAuth session expired or unknown; start the connection again"}
     else:
         try:
             result["plugin"] = await manager.oauth_finish(state, code)
@@ -152,7 +157,7 @@ async def webhook(name: str, request: Request, token: str = ""):
     if len(body) > 1_000_000:
         raise HTTPException(413, "Payload too large")
     headers = {k.lower(): v for k, v in request.headers.items()}
-    if not await container(request).plugins.handle_webhook(name, token, headers, body):
+    if not await container(request).tenants.handle_webhook(name, token, headers, body):
         raise HTTPException(404, "Not found")
     return {"ok": True}
 
@@ -162,11 +167,11 @@ async def webhook(name: str, request: Request, token: str = ""):
 
 @authed.get("/actions")
 async def list_actions(request: Request, status: str | None = None, conversation_id: int | None = None):
-    return await container(request).actions.list(status, conversation_id)
+    return await mine(request).actions.list(status, conversation_id)
 
 
 async def _resolve(request: Request, action_id: int, approve: bool):
-    result = await container(request).actions.resolve(action_id, approve)
+    result = await mine(request).actions.resolve(action_id, approve)
     if result is None:
         raise HTTPException(409, "Action not found or already resolved")
     return result
@@ -193,7 +198,7 @@ async def list_mcp(request: Request):
 
 
 @authed.post("/mcp/{name}/reconnect")
-async def reconnect_mcp(name: str, request: Request):
+async def reconnect_mcp(name: str, request: Request, _: CurrentUser = Depends(require_admin)):
     manager = container(request).mcp
     if name not in {s["name"] for s in manager.status()}:
         raise HTTPException(404, f"Unknown MCP server {name!r}")

@@ -42,7 +42,10 @@ assistant = ["migrations/*.mako", "migrations/versions/*.py", "plugins/builtin/*
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["real_mailer: send notification email through the Gmail plugin instead of the fake mailer"]
+markers = [
+  "real_mailer: send notification email through the Gmail plugin instead of the fake mailer",
+  "first_run: start the app with no accounts (the default fixture creates the owner)",
+]
 
 [tool.ruff]
 line-length = 100

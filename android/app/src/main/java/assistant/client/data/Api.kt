@@ -57,15 +57,29 @@ class Api(private val session: SessionStore, client: OkHttpClient? = null) {
     suspend fun authStatus(base: String): AuthStatus =
         send("GET", "/auth/status", base = base) { decode(AuthStatus.serializer(), it) }
 
-    /** Returns the session token. Throws ApiException(401, "code_required") when a code is needed. */
-    suspend fun login(base: String, password: String, code: String): String {
+    /**
+     * Returns the session token. Throws ApiException(401, "code_required") when a code is needed.
+     * [username] may be left empty while the server has a single account.
+     */
+    suspend fun login(base: String, password: String, code: String, username: String = ""): String {
         val body = buildJsonObject {
             put("password", password)
             put("code", code)
+            if (username.isNotBlank()) put("username", username.trim())
         }
         return send("POST", "/auth/login", jsonBody(body), base = base) { res ->
-            sessionCookie(res.headers("Set-Cookie"))
+            val token = sessionCookie(res.headers("Set-Cookie"))
                 ?: throw ApiException(0, "The server accepted the password but did not start a session")
+            // An admin set this password: the server allows nothing but choosing a new one,
+            // which the web app offers. Better to say so than to sign in and fail everywhere.
+            val user = runCatching { decode(LoginResult.serializer(), res).user }.getOrNull()
+            if (user?.mustChangePassword == true) {
+                throw ApiException(
+                    403,
+                    "An admin set this password. Open the web app once to choose your own, then sign in here.",
+                )
+            }
+            token
         }
     }
 

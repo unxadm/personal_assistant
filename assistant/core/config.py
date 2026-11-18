@@ -20,8 +20,21 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 ENV_PREFIX = "PA_"
 # Environment variables with the prefix that are not config paths.
 RESERVED_ENV = {"PA_CONFIG", "PA_SECRET_KEY"}
-# Only these parts of the config may be changed from the settings UI.
-OVERRIDABLE_PREFIXES = ("llm.", "agent.", "privacy.", "notifications.", "briefing.", "proactive.", "timezone")
+# Only these parts of the config may be changed from the settings UI. Server-wide settings
+# (the model endpoint, the agent's limits, the Telegram bot) are for admins; everything else
+# is personal: each user has their own saved values on top of the file/environment defaults.
+ADMIN_PREFIXES = ("llm.", "agent.")
+USER_PREFIXES = ("privacy.", "notifications.", "briefing.", "proactive.", "timezone")
+OVERRIDABLE_PREFIXES = ADMIN_PREFIXES + USER_PREFIXES
+# Under a personal prefix but shared by everyone: one bot, one VAPID contact.
+SERVER_WIDE_PATHS = (
+    "notifications.telegram.bot_token",
+    "notifications.telegram.api_base",
+    "notifications.web_push.contact",
+)
+# Who the notifications go to. A value in config.yaml applies to the owner only; another
+# user would otherwise get the owner's Telegram chat or mail address by default.
+IDENTITY_PATHS = ("notifications.telegram.chat_id", "notifications.email.to")
 
 
 class _Model(BaseModel):
@@ -429,6 +442,18 @@ def is_overridable(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in OVERRIDABLE_PREFIXES)
 
 
+def is_server_setting(path: str) -> bool:
+    """Admin-only: one value for the whole server."""
+    return path in SERVER_WIDE_PATHS or any(path.startswith(p) for p in ADMIN_PREFIXES)
+
+
+def is_user_setting(path: str) -> bool:
+    """Personal: every user can have their own value."""
+    return not is_server_setting(path) and any(
+        path == p or path.startswith(p) for p in USER_PREFIXES
+    )
+
+
 def set_path(data: dict[str, Any], path: str, value: Any) -> None:
     parts = path.split(".")
     node = data
@@ -437,6 +462,16 @@ def set_path(data: dict[str, Any], path: str, value: Any) -> None:
             node[part] = {}
         node = node[part]
     node[parts[-1]] = value
+
+
+def pop_path(data: dict[str, Any], path: str) -> None:
+    parts = path.split(".")
+    node = data
+    for part in parts[:-1]:
+        node = node.get(part)
+        if not isinstance(node, dict):
+            return
+    node.pop(parts[-1], None)
 
 
 def _deep_merge(base: dict[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -466,6 +501,8 @@ class ConfigService:
     def __init__(self, base: Mapping[str, Any] | None = None):
         self._base: dict[str, Any] = copy.deepcopy(dict(base or {}))
         self._overrides: dict[str, Any] = {}
+        # Bumped whenever the server-wide config changes, so cached per-user configs rebuild.
+        self.version = 0
         self.config = AppConfig.model_validate(self._base)
 
     @classmethod
@@ -490,16 +527,35 @@ class ConfigService:
         return dict(self._overrides)
 
     def build(self, overrides: Mapping[str, Any]) -> AppConfig:
-        """Validate and return the config that ``overrides`` would produce."""
+        """Validate and return the server-wide config that admin ``overrides`` would produce."""
         data = copy.deepcopy(self._base)
         for path, value in overrides.items():
-            if not is_overridable(path):
-                raise ValueError(f"{path!r} cannot be changed at runtime")
+            if not is_server_setting(path):
+                raise ValueError(f"{path!r} is not a server-wide setting")
             set_path(data, path, value)
         return AppConfig.model_validate(data)
 
     def apply_overrides(self, overrides: Mapping[str, Any]) -> AppConfig:
-        """Replace the full override set (dotted path -> value)."""
+        """Replace the full set of server-wide overrides (dotted path -> value)."""
         self.config = self.build(overrides)
         self._overrides = dict(overrides)
+        self.version += 1
         return self.config
+
+    def build_for_user(
+        self, user_overrides: Mapping[str, Any], *, owner: bool = False,
+        server_overrides: Mapping[str, Any] | None = None,
+    ) -> AppConfig:
+        """The config one user sees: server-wide values, the file defaults for personal
+        settings, then that user's own saved values."""
+        data = copy.deepcopy(self._base)
+        for path, value in (self._overrides if server_overrides is None else server_overrides).items():
+            set_path(data, path, value)
+        if not owner:
+            for path in IDENTITY_PATHS:
+                pop_path(data, path)
+        for path, value in user_overrides.items():
+            if not is_user_setting(path):
+                raise ValueError(f"{path!r} is not a personal setting")
+            set_path(data, path, value)
+        return AppConfig.model_validate(data)

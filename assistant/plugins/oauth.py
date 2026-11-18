@@ -28,6 +28,7 @@ EXPIRY_SLACK = 60
 
 @dataclass
 class _Pending:
+    user_id: int
     plugin: str
     verifier: str
     redirect_uri: str
@@ -52,7 +53,8 @@ class OAuthService:
         self._pending: dict[str, _Pending] = {}
 
     def begin(
-        self, plugin: str, spec: OAuthSpec, client_id: str, scopes: list[str], redirect_uri: str
+        self, user_id: int, plugin: str, spec: OAuthSpec, client_id: str, scopes: list[str],
+        redirect_uri: str,
     ) -> str:
         """Return the URL to send the user's browser to."""
         auth_url, _, extra = endpoints(spec)
@@ -63,7 +65,7 @@ class OAuthService:
         challenge = (
             base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
         )
-        self._pending[state] = _Pending(plugin, verifier, redirect_uri, scopes, now)
+        self._pending[state] = _Pending(user_id, plugin, verifier, redirect_uri, scopes, now)
         params = {
             "response_type": "code",
             "client_id": client_id,
@@ -80,12 +82,21 @@ class OAuthService:
         pending = self._pending.get(state)
         return pending.plugin if pending else None
 
+    def pending_user(self, state: str) -> int | None:
+        """Whose connection attempt this ``state`` belongs to."""
+        pending = self._pending.get(state)
+        return pending.user_id if pending else None
+
     async def finish(
-        self, state: str, code: str, spec: OAuthSpec, client_id: str, client_secret: str | None
+        self, user_id: int, state: str, code: str, spec: OAuthSpec, client_id: str,
+        client_secret: str | None,
     ) -> dict[str, Any]:
         """Exchange the authorization code. Returns the token record to store."""
         pending = self._pending.pop(state, None)
-        if pending is None or time.monotonic() - pending.created > STATE_TTL:
+        if (
+            pending is None or pending.user_id != user_id
+            or time.monotonic() - pending.created > STATE_TTL
+        ):
             raise PluginError("OAuth session expired or unknown; start the connection again")
         _, token_url, _ = endpoints(spec)
         data = {

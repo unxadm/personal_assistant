@@ -91,28 +91,14 @@ def vapid_header(private_key: ec.EllipticCurvePrivateKey, endpoint: str, contact
     return f"vapid t={signing_input}.{b64u(signature)}, k={public}"
 
 
-class WebPushChannel(Channel):
-    name = "web_push"
-    label = "Browser / phone push"
+class VapidKeys:
+    """The server's VAPID key pair: one for everyone, created on first use."""
 
-    def __init__(
-        self,
-        db: Database,
-        box: SecretBox,
-        settings: SettingsStore,
-        http: httpx.AsyncClient,
-        get_config: Callable[[], AppConfig],
-    ):
-        self._db = db
-        self._box = box
+    def __init__(self, settings: SettingsStore):
         self._settings = settings
-        self._http = http
-        self._get_config = get_config
         self._key: ec.EllipticCurvePrivateKey | None = None
 
-    # -- keys and subscriptions -------------------------------------------------------
-
-    async def _private_key(self) -> ec.EllipticCurvePrivateKey:
+    async def private_key(self) -> ec.EllipticCurvePrivateKey:
         if self._key is None:
             pem = await self._settings.get(VAPID_KEY)
             if pem is None:
@@ -130,7 +116,36 @@ class WebPushChannel(Channel):
 
     async def public_key(self) -> str:
         """The ``applicationServerKey`` browsers subscribe with."""
-        return b64u(_public_bytes((await self._private_key()).public_key()))
+        return b64u(_public_bytes((await self.private_key()).public_key()))
+
+
+class WebPushChannel(Channel):
+    """One user's devices. A browser belongs to one account at a time: subscribing from it
+    while signed in as someone else moves it, so the previous user's alerts stop going there."""
+
+    name = "web_push"
+    label = "Browser / phone push"
+
+    def __init__(
+        self,
+        db: Database,
+        box: SecretBox,
+        vapid: VapidKeys,
+        http: httpx.AsyncClient,
+        get_config: Callable[[], AppConfig],
+        user_id: int,
+    ):
+        self._db = db
+        self._box = box
+        self._vapid = vapid
+        self._http = http
+        self._get_config = get_config
+        self._user_id = user_id
+
+    # -- keys and subscriptions -------------------------------------------------------
+
+    async def public_key(self) -> str:
+        return await self._vapid.public_key()
 
     async def subscribe(self, subscription: dict[str, Any], label: str = "") -> None:
         endpoint = str(subscription.get("endpoint") or "")
@@ -148,25 +163,44 @@ class WebPushChannel(Channel):
         async with self._db.session() as s:
             row = await s.scalar(select(PushSubscription).where(PushSubscription.endpoint_hash == digest))
             if row is None:
-                s.add(PushSubscription(endpoint_hash=digest, data=data, label=label[:200]))
+                s.add(
+                    PushSubscription(
+                        user_id=self._user_id, endpoint_hash=digest, data=data, label=label[:200]
+                    )
+                )
             else:
-                row.data, row.label = data, label[:200]
+                row.user_id, row.data, row.label = self._user_id, data, label[:200]
             await s.commit()
 
     async def unsubscribe(self, endpoint: str) -> None:
         digest = hashlib.sha256(endpoint.encode()).hexdigest()
         async with self._db.session() as s:
-            await s.execute(delete(PushSubscription).where(PushSubscription.endpoint_hash == digest))
+            await s.execute(
+                delete(PushSubscription).where(
+                    PushSubscription.user_id == self._user_id,
+                    PushSubscription.endpoint_hash == digest,
+                )
+            )
             await s.commit()
 
     async def _subscriptions(self) -> list[tuple[int, dict[str, str]]]:
         async with self._db.session() as s:
-            rows = (await s.scalars(select(PushSubscription))).all()
+            rows = (
+                await s.scalars(
+                    select(PushSubscription).where(PushSubscription.user_id == self._user_id)
+                )
+            ).all()
         return [(r.id, json.loads(self._box.decrypt(r.data))) for r in rows]
 
     async def devices(self) -> list[dict[str, Any]]:
         async with self._db.session() as s:
-            rows = (await s.scalars(select(PushSubscription).order_by(PushSubscription.id))).all()
+            rows = (
+                await s.scalars(
+                    select(PushSubscription)
+                    .where(PushSubscription.user_id == self._user_id)
+                    .order_by(PushSubscription.id)
+                )
+            ).all()
         return [{"id": r.id, "label": r.label, "endpoint_hash": r.endpoint_hash} for r in rows]
 
     # -- channel ----------------------------------------------------------------------
@@ -175,7 +209,15 @@ class WebPushChannel(Channel):
         if not self._get_config().notifications.web_push.enabled:
             return {"ready": False, "detail": "turned off"}
         async with self._db.session() as s:
-            count = len((await s.scalars(select(PushSubscription.id))).all())
+            count = len(
+                (
+                    await s.scalars(
+                        select(PushSubscription.id).where(
+                            PushSubscription.user_id == self._user_id
+                        )
+                    )
+                ).all()
+            )
         if not count:
             return {"ready": False, "detail": "no device has notifications turned on"}
         return {"ready": True, "detail": f"{count} device{'s' if count != 1 else ''}"}
@@ -187,7 +229,7 @@ class WebPushChannel(Channel):
             or cfg.server.public_url
             or "mailto:webpush@localhost.invalid"
         )
-        key = await self._private_key()
+        key = await self._vapid.private_key()
         payload = json.dumps(
             {
                 "id": notification.id,
@@ -226,7 +268,11 @@ class WebPushChannel(Channel):
                 sent += 1
         if gone:
             async with self._db.session() as s:
-                await s.execute(delete(PushSubscription).where(PushSubscription.id.in_(gone)))
+                await s.execute(
+                    delete(PushSubscription).where(
+                        PushSubscription.user_id == self._user_id, PushSubscription.id.in_(gone)
+                    )
+                )
                 await s.commit()
         if not sent:
             raise ChannelError("; ".join(errors) or "no active device")

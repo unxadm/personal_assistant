@@ -75,8 +75,8 @@ async def test_two_step_sign_in(client, app, clock):
     # The secret is encrypted at rest and recovery codes are stored as hashes.
     async with c.db.session() as s:
         rows = {r.key: r for r in (await s.scalars(select(Setting))).all()}
-    assert rows["auth.totp_secret"].encrypted and secret not in str(rows["auth.totp_secret"].value)
-    assert not any(code in str(rows["auth.recovery_hashes"].value) for code in recovery)
+    assert rows["user:1:auth.totp_secret"].encrypted and secret not in str(rows["user:1:auth.totp_secret"].value)
+    assert not any(code in str(rows["user:1:auth.recovery_hashes"].value) for code in recovery)
 
     # Password alone is no longer enough.
     r = await other.post("/api/auth/login", json={"password": PASSWORD})
@@ -84,7 +84,7 @@ async def test_two_step_sign_in(client, app, clock):
     r = await other.post("/api/auth/login", json={"password": PASSWORD, "code": "123456"})
     assert r.status_code == 401 and r.json()["detail"] == "Wrong code"
     r = await other.post("/api/auth/login", json={"password": "nope nope nope", "code": "123456"})
-    assert r.json()["detail"] == "Wrong password"
+    assert r.json()["detail"] == "Wrong username or password"
 
     # The code used for enrolment cannot be used again; the next one works, once.
     used = totp.code_at(secret, clock())
@@ -96,7 +96,7 @@ async def test_two_step_sign_in(client, app, clock):
     assert (await third.post("/api/auth/login", json={"password": PASSWORD, "code": code})).status_code == 401
 
     # A recovery code works exactly once.
-    c.login_guard.reset()
+    c.login_guard.reset("owner")
     assert (await third.post("/api/auth/login", json={"password": PASSWORD, "code": recovery[0].upper()})).status_code == 200
     fourth = fresh(app)
     assert (await fourth.post("/api/auth/login", json={"password": PASSWORD, "code": recovery[0]})).status_code == 401
@@ -122,7 +122,7 @@ async def test_wrong_codes_lock_sign_in(client, app, clock):
         assert r.status_code == 401
     assert (await other.post("/api/auth/login", json={"password": PASSWORD, "code": "000000"})).status_code == 429
     # Asking for the code is not counted as a failure.
-    app.state.c.login_guard.reset()
+    app.state.c.login_guard.reset("owner")
     for _ in range(8):
         assert (await other.post("/api/auth/login", json={"password": PASSWORD})).json()["detail"] == "code_required"
 
@@ -147,6 +147,7 @@ async def test_password_change_signs_out_other_devices(client, app):
 # -- first run ------------------------------------------------------------------------
 
 
+@pytest.mark.first_run
 async def test_first_run_on_a_network_address_needs_the_code_from_the_log(app_config, mock_llm, web, caplog):
     app_config["server"]["host"] = "0.0.0.0"
     application = create_app(
@@ -167,9 +168,9 @@ async def test_first_run_on_a_network_address_needs_the_code_from_the_log(app_co
             r = await c.post("/api/auth/setup", json={"password": PASSWORD, "setup_code": code.upper()})
             assert r.status_code == 200
             assert application.state.c.setup_code is None
-            assert (await c.get("/api/auth/status")).json() == {
-                "setup_required": False, "setup_code_required": False, "authenticated": True,
-            }
+            status = (await c.get("/api/auth/status")).json()
+            assert status["setup_required"] is False and status["authenticated"] is True
+            assert status["user"]["username"] == "owner" and status["user"]["role"] == "admin"
             assert (await fresh(application).post("/api/auth/setup", json={"password": PASSWORD})).status_code == 409
 
 
@@ -188,6 +189,7 @@ async def test_security_headers(client):
     assert h["strict-transport-security"].startswith("max-age=")
 
 
+@pytest.mark.first_run
 async def test_session_cookie_flags(app):
     c = fresh(app)
     r = await c.post("/api/auth/setup", json={"password": PASSWORD})
@@ -206,7 +208,7 @@ async def test_cross_origin_writes_are_refused(client, app):
     assert r.status_code == 403
     r = await client.post("/api/memory/facts", json=body, headers={"Sec-Fetch-Site": "cross-site"})
     assert r.status_code == 403
-    assert await app.state.c.memory.list_facts() == []
+    assert await app.state.c.of(1).memory.list_facts() == []
 
     for origin in ("http://test", "https://assistant.test"):  # the app itself, or its public URL
         r = await client.post("/api/memory/facts", json=body, headers={"Origin": origin})

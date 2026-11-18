@@ -27,10 +27,34 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    """An account. The first one created is the owner and an admin."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Lower-case, 1-32 characters from [a-z0-9._-].
+    username: Mapped[str] = mapped_column(String(32), unique=True)
+    display_name: Mapped[str] = mapped_column(String(100), default="")
+    role: Mapped[str] = mapped_column(String(10), default="member")  # admin | member
+    password_hash: Mapped[str] = mapped_column(Text)
+    # An admin set or reset the password: only changing it is allowed until then.
+    must_change_password: Mapped[bool] = mapped_column(default=False, server_default="0")
+    disabled: Mapped[bool] = mapped_column(default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+def owner_id() -> Any:
+    """Column definition shared by every per-user table."""
+    return mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     title: Mapped[str] = mapped_column(String(200), default="")
     channel: Mapped[str] = mapped_column(String(50), default="web")
     # Rolling summary of every message with id <= summary_upto_id.
@@ -68,6 +92,7 @@ class MemoryFact(Base):
     __tablename__ = "memory_facts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     category: Mapped[str] = mapped_column(String(50), default="general")
     content: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(20), default="user")  # user | agent
@@ -80,11 +105,12 @@ class Embedding(Base):
 
     __tablename__ = "embeddings"
     __table_args__ = (
-        UniqueConstraint("kind", "ref_id", name="uq_embeddings_kind_ref"),
+        UniqueConstraint("user_id", "kind", "ref_id", name="uq_embeddings_user_kind_ref"),
         Index("ix_embeddings_model", "model"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     kind: Mapped[str] = mapped_column(String(30))  # fact | message | (later) item
     ref_id: Mapped[str] = mapped_column(String(100))
     text: Mapped[str] = mapped_column(Text)
@@ -110,6 +136,7 @@ class AuthSession(Base):
     __tablename__ = "auth_sessions"
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = owner_id()
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -119,6 +146,9 @@ class PluginState(Base):
 
     __tablename__ = "plugins"
 
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     name: Mapped[str] = mapped_column(String(50), primary_key=True)
     enabled: Mapped[bool] = mapped_column(default=False)
     config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -135,6 +165,9 @@ class PluginKV(Base):
 
     __tablename__ = "plugin_kv"
 
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     plugin: Mapped[str] = mapped_column(String(50), primary_key=True)
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON)
@@ -145,12 +178,13 @@ class Item(Base):
 
     __tablename__ = "items"
     __table_args__ = (
-        UniqueConstraint("plugin", "external_id", name="uq_items_plugin_external"),
+        UniqueConstraint("user_id", "plugin", "external_id", name="uq_items_user_plugin_external"),
         Index("ix_items_type_starts", "type", "starts_at"),
         Index("ix_items_occurred", "occurred_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     plugin: Mapped[str] = mapped_column(String(50))
     external_id: Mapped[str] = mapped_column(String(300))
     # item | event | task | message | contact | document | transaction | location
@@ -176,6 +210,7 @@ class PendingAction(Base):
     __tablename__ = "pending_actions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     conversation_id: Mapped[int | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -199,6 +234,7 @@ class Reminder(Base):
     __table_args__ = (Index("ix_reminders_status_next", "status", "next_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     text: Mapped[str] = mapped_column(Text)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -225,6 +261,7 @@ class NotificationRecord(Base):
     __table_args__ = (Index("ix_notifications_status_after", "status", "deliver_after"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     category: Mapped[str] = mapped_column(String(30), default="system")
     title: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text, default="")
@@ -247,6 +284,7 @@ class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     endpoint_hash: Mapped[str] = mapped_column(String(64), unique=True)
     data: Mapped[str] = mapped_column(Text)
     label: Mapped[str] = mapped_column(String(200), default="")
@@ -259,6 +297,7 @@ class Attachment(Base):
     __tablename__ = "attachments"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     # NULL until the message it was uploaded for is sent.
     message_id: Mapped[int | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
@@ -277,9 +316,13 @@ class Suggestion(Base):
     """Something the proactive engine noticed: the suggestion inbox and its history."""
 
     __tablename__ = "suggestions"
-    __table_args__ = (Index("ix_suggestions_status_created", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_suggestions_status_created", "status", "created_at"),
+        UniqueConstraint("user_id", "dedupe_key", name="uq_suggestions_user_dedupe"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     # bill | deadline | appointment | commitment | travel | package | needs_reply |
     # calendar_conflict | back_to_back | early_meeting | meeting_brief
     category: Mapped[str] = mapped_column(String(30))
@@ -294,7 +337,7 @@ class Suggestion(Base):
     item_id: Mapped[int | None] = mapped_column(nullable=True)
     sender: Mapped[str | None] = mapped_column(String(200), nullable=True)
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    dedupe_key: Mapped[str] = mapped_column(String(300), unique=True)
+    dedupe_key: Mapped[str] = mapped_column(String(300))
     # pending | accepted | auto_applied | dismissed | expired
     status: Mapped[str] = mapped_column(String(20), default="pending")
     feedback: Mapped[str | None] = mapped_column(String(12), nullable=True)  # useful | not_useful
@@ -322,6 +365,7 @@ class AuditEntry(Base):
     __table_args__ = (Index("ix_audit_log_at", "at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = owner_id()
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     actor: Mapped[str] = mapped_column(String(20))  # assistant | proactive | user
     action: Mapped[str] = mapped_column(String(80))  # e.g. tool.create_reminder

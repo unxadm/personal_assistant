@@ -151,7 +151,7 @@ class PluginContext:
 
     async def kv_get(self, key: str, default: Any = None) -> Any:
         async with self._m.db.session() as s:
-            row = await s.get(PluginKV, (self.name, key))
+            row = await s.get(PluginKV, (self._m.user_id, self.name, key))
         return default if row is None else row.value
 
     async def kv_set(self, key: str, value: Any) -> None:
@@ -159,12 +159,17 @@ class PluginContext:
         async with self._m.db.session() as s:
             if value is None:
                 await s.execute(
-                    delete(PluginKV).where(PluginKV.plugin == self.name, PluginKV.key == key)
+                    delete(PluginKV).where(
+                        PluginKV.user_id == self._m.user_id,
+                        PluginKV.plugin == self.name, PluginKV.key == key,
+                    )
                 )
             else:
-                row = await s.get(PluginKV, (self.name, key))
+                row = await s.get(PluginKV, (self._m.user_id, self.name, key))
                 if row is None:
-                    s.add(PluginKV(plugin=self.name, key=key, value=value))
+                    s.add(
+                        PluginKV(user_id=self._m.user_id, plugin=self.name, key=key, value=value)
+                    )
                 else:
                     row.value = value
             await s.commit()

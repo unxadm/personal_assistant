@@ -60,9 +60,13 @@ def sniff_audio(data: bytes) -> tuple[str, str] | None:
 
 
 class AttachmentStore:
-    def __init__(self, db: Database, get_config: Callable[[], AppConfig]):
+    """One user's uploads. The files share one directory under unguessable names; the
+    database row says whose they are, and every lookup checks it."""
+
+    def __init__(self, db: Database, get_config: Callable[[], AppConfig], user_id: int):
         self._db = db
         self._get_config = get_config
+        self._user_id = user_id
 
     @property
     def _dir(self) -> Path:
@@ -85,7 +89,7 @@ class AttachmentStore:
         stored = f"{secrets.token_hex(16)}.{ext}"
         (self._dir / stored).write_bytes(data)
         row = Attachment(
-            mime=mime, stored_name=stored, size=len(data),
+            user_id=self._user_id, mime=mime, stored_name=stored, size=len(data),
             filename=Path(filename).name[:200] or f"image.{ext}",
         )
         async with self._db.session() as s:
@@ -96,7 +100,7 @@ class AttachmentStore:
     async def get(self, attachment_id: int) -> tuple[Attachment, Path] | None:
         async with self._db.session() as s:
             row = await s.get(Attachment, attachment_id)
-        if row is None:
+        if row is None or row.user_id != self._user_id:
             return None
         path = self._dir / row.stored_name
         return (row, path) if path.is_file() else None
@@ -108,7 +112,13 @@ class AttachmentStore:
                 f"at most {self._get_config().uploads.max_images_per_message} images per message"
             )
         async with self._db.session() as s:
-            rows = (await s.scalars(select(Attachment).where(Attachment.id.in_(ids)))).all()
+            rows = (
+                await s.scalars(
+                    select(Attachment).where(
+                        Attachment.id.in_(ids), Attachment.user_id == self._user_id
+                    )
+                )
+            ).all()
             by_id = {r.id: r for r in rows}
             if len(by_id) != len(set(ids)) or any(r.message_id is not None for r in rows):
                 raise MediaError("attachment not found; upload the image again")
@@ -123,7 +133,9 @@ class AttachmentStore:
         async with self._db.session() as s:
             rows = (
                 await s.scalars(
-                    select(Attachment).where(Attachment.message_id.in_(message_ids)).order_by(Attachment.id)
+                    select(Attachment)
+                    .where(Attachment.user_id == self._user_id, Attachment.message_id.in_(message_ids))
+                    .order_by(Attachment.id)
                 )
             ).all()
         out: dict[int, list[Attachment]] = {}
@@ -140,7 +152,7 @@ class AttachmentStore:
     async def set_description(self, attachment_id: int, description: str) -> None:
         async with self._db.session() as s:
             row = await s.get(Attachment, attachment_id)
-            if row is not None:
+            if row is not None and row.user_id == self._user_id:
                 row.description = description
                 await s.commit()
 
@@ -164,7 +176,8 @@ class AttachmentStore:
             rows = (
                 await s.scalars(
                     select(Attachment).where(
-                        Attachment.message_id.is_(None), Attachment.created_at < now - ORPHAN_AFTER
+                        Attachment.user_id == self._user_id,
+                        Attachment.message_id.is_(None), Attachment.created_at < now - ORPHAN_AFTER,
                     )
                 )
             ).all()
