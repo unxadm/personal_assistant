@@ -126,9 +126,33 @@ class ServerConfig(_Model):
     public_url: str | None = None
 
 
+class OidcConfig(_Model):
+    """Optional single sign-on through an OpenID Connect provider (Keycloak, Authentik,
+    Google, Microsoft Entra, ...). Authorization-code flow with PKCE; file/env only."""
+
+    enabled: bool = False
+    # The provider's issuer URL: ``<issuer>/.well-known/openid-configuration`` must exist.
+    issuer: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    scopes: list[str] = ["openid", "profile", "email"]
+    # Text of the sign-in button.
+    label: str = "Single sign-on"
+    # Defaults to <server.public_url>/api/auth/oidc/callback; register exactly this with the provider.
+    redirect_uri: str | None = None
+    # false: the password form is hidden and password sign-in refused (SSO only).
+    password_login: bool = True
+    # Create an account the first time someone signs in whom no account is linked to.
+    auto_create: bool = False
+    default_role: Literal["member", "admin"] = "member"
+    # With auto_create: only verified e-mail addresses in these domains (empty: any domain).
+    allowed_email_domains: list[str] = []
+
+
 class AuthConfig(_Model):
     session_ttl_hours: int = 24 * 14
     min_password_length: int = 10
+    oidc: OidcConfig = OidcConfig()
 
 
 class AgentConfig(_Model):

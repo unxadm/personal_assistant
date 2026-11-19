@@ -28,7 +28,7 @@ async def test_auth_flow(app):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         assert (await c.get("/api/auth/status")).json() == {
             "setup_required": True, "setup_code_required": False, "authenticated": False,
-            "user": None,
+            "user": None, "oidc": {"enabled": False, "label": "Single sign-on", "password_login": True},
         }
         assert (await c.get("/api/conversations")).status_code == 401
         assert (await c.post("/api/auth/setup", json={"password": "short"})).status_code == 422

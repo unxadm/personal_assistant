@@ -19,6 +19,7 @@ dependencies = [
     "httpx>=0.27",
     "mcp>=2.3",
     "cryptography>=42",
+    "pyjwt[crypto]>=2.8",
     "argon2-cffi>=23.1",
     "sqlite-vec>=0.1.6",
     "jsonschema>=4.20",

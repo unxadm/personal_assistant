@@ -70,7 +70,7 @@ assistant/
   media/       image/audio upload handling
   api/         app.py (wiring: create_app), tenants.py (one service stack per user), auth.py,
                user_routes.py (admin), hardening.py, *_routes.py
-  migrations/  Alembic versions 0001..0007
+  migrations/  Alembic versions 0001..0008
 plugins/       third-party examples: _template, tasks, weather
 web/src/       React + Vite + Tailwind (pages/, api.ts is the typed client, App.tsx has the tabs)
 android/       Kotlin + Compose client (own README)
@@ -135,6 +135,18 @@ Rules when you change anything near this:
   channel only).
 - Proactive/background code that calls the model must not give it side-effecting tools.
 - Add a test in `tests/test_injection.py` style when you add a way for outside content in.
+
+## Single sign-on
+
+`core/oidc.py` + the `/oidc/*` routes in `api/auth.py`; config `auth.oidc` (file/env only: it
+holds a client secret and decides who may get in, so never make `auth.` overridable from the
+UI). Invariants: match accounts only by `(issuer, subject)` from a verified ID token, never by
+e-mail or username; keep the algorithm allow-list asymmetric; keep `state` single-use and
+tied to the `pa_oidc` cookie; never show or log provider error text or the secret. Tests use a
+fake provider in `tests/test_oidc.py` (it checks PKCE and client auth); extend it for any change.
+The Android app signs in through a one-time-code hand-off (`/oidc/login?challenge=`,
+`assistant.client://sso`, `/oidc/exchange`): the code must stay single-use, short-lived and
+useless without the app's verifier; the redirect target is a constant, never a parameter.
 
 ## Configuration
 

@@ -20,6 +20,9 @@ from .security import hash_password
 
 USERNAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 ROLES = ("admin", "member")
+# Stored instead of a hash for accounts that only sign in through single sign-on: no password
+# can match it, until the person sets one.
+NO_PASSWORD = "!"
 
 
 class UserError(ValueError):
@@ -109,19 +112,21 @@ class UserService:
         return users[0] if len(users) == 1 and not users[0].disabled else None
 
     async def create(
-        self, username: str, password: str, *, role: str = "member", display_name: str = "",
-        must_change_password: bool = False,
+        self, username: str, password: str | None, *, role: str = "member",
+        display_name: str = "", must_change_password: bool = False,
     ) -> User:
+        """``password=None`` makes an account that can only sign in through single sign-on."""
         name = clean_username(username)
         if role not in ROLES:
             raise UserError("role must be admin or member")
-        self.check_password(password)
+        if password is not None:
+            self.check_password(password)
         async with self._db.session() as s:
             if await s.scalar(select(User.id).where(User.username == name)):
                 raise UserError(f"The username {name!r} is taken")
             user = User(
                 username=name, display_name=display_name.strip()[:100], role=role,
-                password_hash=hash_password(password),
+                password_hash=NO_PASSWORD if password is None else hash_password(password),
                 must_change_password=must_change_password,
             )
             s.add(user)

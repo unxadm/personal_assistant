@@ -14,12 +14,18 @@ function lastUsername(): string {
 export default function Login({
   setup,
   needsSetupCode,
+  oidc,
   onDone,
 }: {
   setup: boolean;
   needsSetupCode: boolean;
+  oidc: { enabled: boolean; label: string; password_login: boolean };
   onDone: () => void;
 }) {
+  // The single sign-on callback sends the browser back with ?oidc_error=...
+  const ssoError = new URLSearchParams(location.search).get("oidc_error") ?? "";
+  const sso = oidc.enabled && !setup;
+  const passwordForm = !sso || oidc.password_login;
   const [username, setUsername] = useState(setup ? "owner" : lastUsername());
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -27,7 +33,7 @@ export default function Login({
   // Two-step sign-in: asked for only after the password was accepted.
   const [askCode, setAskCode] = useState(false);
   const [code, setCode] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(ssoError);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -69,7 +75,14 @@ export default function Login({
             (10+ characters).
           </p>
         )}
-        {!askCode && (
+        {sso && !askCode && (
+          // A plain link: the browser leaves for the provider and comes back signed in.
+          <a className="btn block w-full text-center" href="/api/auth/oidc/login">
+            Sign in with {oidc.label}
+          </a>
+        )}
+        {sso && passwordForm && !askCode && <p className="text-center text-xs text-slate-500">or with a password</p>}
+        {passwordForm && !askCode && (
           <>
             <input
               className="input"
@@ -127,9 +140,11 @@ export default function Login({
           </label>
         )}
         {error && <p className="text-sm text-red-400">{error}</p>}
-        <button className="btn w-full" disabled={busy || !password || (askCode && !code)}>
-          {setup ? "Save and continue" : "Sign in"}
-        </button>
+        {passwordForm && (
+          <button className="btn w-full" disabled={busy || !password || (askCode && !code)}>
+            {setup ? "Save and continue" : "Sign in"}
+          </button>
+        )}
       </form>
     </div>
   );

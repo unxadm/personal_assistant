@@ -9,6 +9,7 @@ design and [docs/SECURITY.md](docs/SECURITY.md) for what is protected and what i
 
 - Chat in a web UI (installable as a PWA) behind a password, with optional two-step sign-in
   (authenticator app and recovery codes).
+- Optional single sign-on with any OpenID Connect provider ([Single sign-on](#single-sign-on-oidc)).
 - Several people on one server ([Several users](#several-users)): each has their own
   conversations, memory, reminders, connected Google accounts, notifications and settings,
   and nobody (admins included) can read anyone else's.
@@ -369,6 +370,30 @@ Settings page. The Settings page can change two kinds of setting:
 
 Server, auth, OAuth client, database and MCP server settings are file/env only. See [config.example.yaml](config.example.yaml).
 
+## Single sign-on (OIDC)
+
+Optional. If you already run an identity provider (Keycloak, Authentik, Authelia, Google,
+Microsoft Entra, ...), people can sign in with it instead of, or next to, a password.
+
+1. In the provider, create a client for this app: authorization-code flow, redirect URI
+   `https://<your server>/api/auth/oidc/callback` (set `server.public_url` so the app builds
+   the same address), scopes `openid profile email`.
+2. Put the details in `config.yaml` (see the commented `auth.oidc` block in
+   [config.example.yaml](config.example.yaml)); keep the secret in `.env` as
+   `PA_AUTH__OIDC__CLIENT_SECRET`. Restart. The sign-in page now has a **Sign in with …**
+   button.
+3. Existing accounts link themselves: sign in with the password, then Settings → Sign-in
+   security → **Link**. New people can be created by an admin as usual, or automatically on
+   their first SSO sign-in with `auto_create: true` (verified e-mail required, optionally
+   limited to `allowed_email_domains`; they get the `default_role`).
+
+Accounts are never matched by e-mail or username, only by the provider's stable subject id,
+so nobody can claim an account by choosing a matching address at the provider. Set
+`password_login: false` to allow SSO only. Two-step sign-in is the provider's job for SSO
+sign-ins. The Android app has a **Sign in with single sign-on** button that opens the phone's
+browser and comes back signed in (no extra provider setup: it uses the same redirect URI and
+client). Details in [docs/SECURITY.md](docs/SECURITY.md).
+
 ## Several users
 
 The first account created is the **owner** and an admin. Admins open the **People** tab to
@@ -406,7 +431,8 @@ plugin loader, reminder parsing and scheduling, the LLM adapter, an end-to-end r
 flow, the proactive engine, sign-in security ([tests/test_security.py](tests/test_security.py)),
 prompt injection ([tests/test_injection.py](tests/test_injection.py)), user isolation and
 account administration ([tests/test_multiuser.py](tests/test_multiuser.py)) and the
-upgrade from a single-user database ([tests/test_migration.py](tests/test_migration.py)).
+upgrade from a single-user database ([tests/test_migration.py](tests/test_migration.py)) and
+OIDC sign-in against a fake provider ([tests/test_oidc.py](tests/test_oidc.py)).
 
 The Android client has its own tests: `cd android && ./gradlew testDebugUnitTest lintDebug`.
 

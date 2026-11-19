@@ -63,6 +63,14 @@ export interface AuthStatus {
   setup_code_required: boolean;
   authenticated: boolean;
   user: AuthUser | null;
+  oidc: { enabled: boolean; label: string; password_login: boolean };
+}
+export interface SecurityInfo {
+  totp_enabled: boolean;
+  recovery_codes_left: number;
+  sessions: number;
+  has_password: boolean;
+  sso: { enabled: boolean; label: string; linked: { email: string | null; issuer: string; linked_at: string }[] };
 }
 export interface UserInfo {
   id: number;
@@ -330,7 +338,7 @@ export const api = {
   login: (username: string, password: string, code = "") =>
     request("POST", "/auth/login", { username, password, code }),
   security: () =>
-    request<{ totp_enabled: boolean; recovery_codes_left: number; sessions: number }>("GET", "/auth/security"),
+    request<SecurityInfo>("GET", "/auth/security"),
   changePassword: (current: string, next: string) => request("POST", "/auth/password", { current, new: next }),
   revokeOtherSessions: () => request("POST", "/auth/sessions/revoke-others"),
   totpSetup: () => request<{ secret: string; uri: string }>("POST", "/auth/totp/setup"),
@@ -339,6 +347,8 @@ export const api = {
   newRecoveryCodes: (password: string) =>
     request<{ recovery_codes: string[] }>("POST", "/auth/totp/recovery-codes", { password }),
   logout: () => request("POST", "/auth/logout"),
+  oidcLink: () => request<{ url: string }>("POST", "/auth/oidc/link"),
+  oidcUnlink: (password: string) => request("POST", "/auth/oidc/unlink", { password }),
   users: () => request<UserInfo[]>("GET", "/users"),
   createUser: (body: { username: string; display_name: string; role: string; password: string }) =>
     request<{ user: UserInfo; temporary_password: string | null }>("POST", "/users", body),

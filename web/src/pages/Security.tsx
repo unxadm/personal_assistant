@@ -1,8 +1,8 @@
 import QRCode from "qrcode";
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { api, type SecurityInfo } from "../api";
 
-type Info = { totp_enabled: boolean; recovery_codes_left: number; sessions: number };
+type Info = SecurityInfo;
 
 export default function Security() {
   const [info, setInfo] = useState<Info | null>(null);
@@ -149,17 +149,66 @@ export default function Security() {
         )}
       </div>
 
+      {info.sso.enabled && (
+        <div className="space-y-2 border-t border-slate-800 pt-3">
+          <h3 className="text-sm font-medium">{info.sso.label}</h3>
+          {info.sso.linked.length > 0 ? (
+            <>
+              <p className="text-sm text-slate-300">
+                Linked{info.sso.linked[0].email ? ` to ${info.sso.linked[0].email}` : ""}. You can sign in with{" "}
+                {info.sso.label} on the sign-in page.
+              </p>
+              <button
+                className="btn-ghost"
+                disabled={busy}
+                onClick={() =>
+                  withPassword("unlink this", async (p) => {
+                    await api.oidcUnlink(p);
+                    setNote("Unlinked.");
+                  })
+                }
+              >
+                Unlink
+              </button>
+              {!info.has_password && (
+                <p className="text-xs text-slate-500">Set a password below first if you want to be able to unlink.</p>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-slate-400">
+                Not linked. Link this account to your {info.sso.label} identity to sign in with it. You will be sent
+                to the provider and brought back here.
+              </p>
+              <button
+                className="btn-ghost"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    location.assign((await api.oidcLink()).url);
+                  })
+                }
+              >
+                Link {info.sso.label}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="space-y-2 border-t border-slate-800 pt-3">
-        <h3 className="text-sm font-medium">Password</h3>
+        <h3 className="text-sm font-medium">{info.has_password ? "Password" : "Set a password"}</h3>
         <div className="grid gap-3 sm:grid-cols-3">
-          <input
-            className="input"
-            type="password"
-            placeholder="Current password"
-            autoComplete="current-password"
-            value={current}
-            onChange={(e) => setCurrent(e.target.value)}
-          />
+          {info.has_password && (
+            <input
+              className="input"
+              type="password"
+              placeholder="Current password"
+              autoComplete="current-password"
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+            />
+          )}
           <input
             className="input"
             type="password"
@@ -180,7 +229,7 @@ export default function Security() {
         <div className="flex flex-wrap gap-2">
           <button
             className="btn-ghost"
-            disabled={busy || !current || !next || next !== confirm}
+            disabled={busy || (info.has_password && !current) || !next || next !== confirm}
             onClick={() =>
               run(async () => {
                 await api.changePassword(current, next);
@@ -191,7 +240,7 @@ export default function Security() {
               })
             }
           >
-            Change password
+            {info.has_password ? "Change password" : "Set password"}
           </button>
           <button
             className="btn-ghost"

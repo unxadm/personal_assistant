@@ -18,6 +18,14 @@ data class LoginUser(
 data class AuthStatus(
     @SerialName("setup_required") val setupRequired: Boolean = false,
     val authenticated: Boolean = false,
+    val oidc: SsoStatus = SsoStatus(),
+)
+
+@Serializable
+data class SsoStatus(
+    val enabled: Boolean = false,
+    val label: String = "",
+    @SerialName("password_login") val passwordLogin: Boolean = true,
 )
 
 @Serializable

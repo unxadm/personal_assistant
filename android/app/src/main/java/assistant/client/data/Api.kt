@@ -67,20 +67,34 @@ class Api(private val session: SessionStore, client: OkHttpClient? = null) {
             put("code", code)
             if (username.isNotBlank()) put("username", username.trim())
         }
-        return send("POST", "/auth/login", jsonBody(body), base = base) { res ->
-            val token = sessionCookie(res.headers("Set-Cookie"))
-                ?: throw ApiException(0, "The server accepted the password but did not start a session")
-            // An admin set this password: the server allows nothing but choosing a new one,
-            // which the web app offers. Better to say so than to sign in and fail everywhere.
-            val user = runCatching { decode(LoginResult.serializer(), res).user }.getOrNull()
-            if (user?.mustChangePassword == true) {
-                throw ApiException(
-                    403,
-                    "An admin set this password. Open the web app once to choose your own, then sign in here.",
-                )
-            }
-            token
+        return send("POST", "/auth/login", jsonBody(body), base = base) { res -> sessionFrom(res, "password") }
+    }
+
+    /**
+     * Finish a single sign-on: trade the one-time [code] the browser handed over, with the
+     * [verifier] only this app knows, for the session token.
+     */
+    suspend fun ssoExchange(base: String, code: String, verifier: String): String {
+        val body = buildJsonObject {
+            put("code", code)
+            put("verifier", verifier)
         }
+        return send("POST", "/auth/oidc/exchange", jsonBody(body), base = base) { res -> sessionFrom(res, "sign-in") }
+    }
+
+    private fun sessionFrom(res: Response, what: String): String {
+        val token = sessionCookie(res.headers("Set-Cookie"))
+            ?: throw ApiException(0, "The server accepted the $what but did not start a session")
+        // An admin set this password: the server allows nothing but choosing a new one,
+        // which the web app offers. Better to say so than to sign in and fail everywhere.
+        val user = runCatching { decode(LoginResult.serializer(), res).user }.getOrNull()
+        if (user?.mustChangePassword == true) {
+            throw ApiException(
+                403,
+                "An admin set this password. Open the web app once to choose your own, then sign in here.",
+            )
+        }
+        return token
     }
 
     suspend fun logout() {

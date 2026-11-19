@@ -1,6 +1,9 @@
 package assistant.client.ui
 
 import android.app.Application
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,22 +19,29 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import assistant.client.data.SsoCallback
+import assistant.client.data.SsoRequest
 import assistant.client.data.UrlResult
 import assistant.client.data.normalizeBaseUrl
+import assistant.client.data.parseSsoCallback
+import assistant.client.data.ssoStartUrl
 
 class LoginModel(application: Application) : ScreenModel(application) {
     var url by mutableStateOf(app.session.baseUrl.orEmpty())
@@ -44,15 +54,55 @@ class LoginModel(application: Application) : ScreenModel(application) {
 
     val plainHttp get() = url.trim().startsWith("http://", ignoreCase = true)
 
+    private fun serverBase(): String? = when (val result = normalizeBaseUrl(url, allowHttp)) {
+        is UrlResult.Error -> {
+            error = result.message
+            null
+        }
+        is UrlResult.Ok -> result.base
+    }
+
+    /** Opens [open] with the address of the server's single sign-on page. */
+    fun signInWithSso(open: (String) -> Unit) {
+        if (busy) return
+        val base = serverBase() ?: return
+        run {
+            val status = api.authStatus(base)
+            if (status.setupRequired) {
+                error = "This server has no account yet. Open $base in a browser to finish the first-time setup, then sign in here."
+                return@run
+            }
+            if (!status.oidc.enabled) {
+                error = "This server does not offer single sign-on."
+                return@run
+            }
+            val request = SsoRequest(base, allowHttp && base.startsWith("http://"))
+            app.pendingSso = request
+            open(ssoStartUrl(base, request.challenge))
+        }
+    }
+
+    /** The browser is back: [address] carries a one-time code (or why it did not work). */
+    fun finishSso(address: String) {
+        val callback = parseSsoCallback(address) ?: return
+        val request = app.pendingSso
+        app.pendingSso = null
+        if (request == null || request.expired()) {
+            error = "That sign-in expired. Start it again."
+            return
+        }
+        when (callback) {
+            is SsoCallback.Failed -> error = callback.message
+            is SsoCallback.Code -> run {
+                val token = api.ssoExchange(request.base, callback.code, request.verifier)
+                app.session.save(request.base, token, request.allowHttp)
+            }
+        }
+    }
+
     fun signIn() {
         if (busy) return
-        val base = when (val result = normalizeBaseUrl(url, allowHttp)) {
-            is UrlResult.Error -> {
-                error = result.message
-                return
-            }
-            is UrlResult.Ok -> result.base
-        }
+        val base = serverBase() ?: return
         if (password.isEmpty()) {
             error = "Enter your password"
             return
@@ -76,7 +126,18 @@ class LoginModel(application: Application) : ScreenModel(application) {
 }
 
 @Composable
-fun LoginScreen(model: LoginModel = viewModel()) {
+fun LoginScreen(
+    model: LoginModel = viewModel(),
+    ssoCallback: String? = null,
+    onSsoHandled: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    LaunchedEffect(ssoCallback) {
+        if (ssoCallback != null) {
+            model.finishSso(ssoCallback)
+            onSsoHandled()
+        }
+    }
     Surface(Modifier.fillMaxSize()) {
         Column(
             Modifier
@@ -150,6 +211,26 @@ fun LoginScreen(model: LoginModel = viewModel()) {
             Button(onClick = model::signIn, enabled = !model.busy, modifier = Modifier.fillMaxWidth()) {
                 Text(if (model.busy) "Signing in…" else "Sign in")
             }
+            OutlinedButton(
+                onClick = {
+                    model.signInWithSso { address ->
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(address)))
+                        } catch (e: ActivityNotFoundException) {
+                            model.error = "No web browser is available to sign in with."
+                        }
+                    }
+                },
+                enabled = !model.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Sign in with single sign-on")
+            }
+            Text(
+                "Opens your browser to sign in with your organisation's login, if this server offers it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

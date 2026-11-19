@@ -19,6 +19,7 @@ from ..agent.tools import ToolRegistry
 from ..core.config import LEGACY_EMAIL_KEYS, ConfigService, is_server_setting
 from ..core.db import Database
 from ..core.models import utcnow
+from ..core.oidc import OidcService
 from ..core.security import SecretBox, restrict_permissions, setup_logging
 from ..core.settings_store import SettingsStore
 from ..core.users import UserService
@@ -78,6 +79,7 @@ class Container:
     oauth: OAuthService
     vapid: VapidKeys
     telegram: TelegramBot
+    oidc: OidcService
     scheduler: Scheduler
     clock: Callable[[], datetime]
     mcp: McpManager
@@ -171,7 +173,8 @@ def create_app(
         app.state.c = Container(
             config=config, db=db, box=box, settings=settings, llm=llm, tools=tools,
             login_guard=auth.LoginGuard(), users=users, tenants=tenants, oauth=shared.oauth,
-            vapid=shared.vapid, telegram=bot, scheduler=scheduler, clock=clock, mcp=mcp,
+            vapid=shared.vapid, telegram=bot, oidc=OidcService(get_config, notify_http),
+            scheduler=scheduler, clock=clock, mcp=mcp,
         )
         for user in await users.list():
             tenant = await tenants.add(user, start=False)

@@ -38,6 +38,14 @@ before giving the APK to anyone else.
 Enter the server's address, your password and, if two-step sign-in is on, the code from
 your authenticator app (or a recovery code).
 
+If the server offers single sign-on (OIDC), tap **Sign in with single sign-on** instead: the
+phone's browser opens the provider's page and returns to the app signed in. Nothing needs
+configuring on the phone; the provider only needs the server's redirect URI. The app and the
+browser cannot share cookies, so the server hands the app a one-time code that is useless
+without a secret the app generated for that attempt (details in
+[docs/SECURITY.md](../docs/SECURITY.md)). Two-step codes are the provider's job for these
+sign-ins, and an account created by SSO has no password until you set one in the web app.
+
 - **HTTPS** is expected. Certificate authorities you installed on the phone are trusted, so
   a private CA works.
 - **Plain `http://`** is refused unless you tick *Allow unencrypted HTTP* on the sign-in

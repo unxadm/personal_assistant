@@ -48,6 +48,49 @@ it, from every user.
   password.
 - Sign-ins, failed attempts and security changes appear under Activity.
 
+## Single sign-on (OIDC, optional)
+
+Off unless `auth.oidc.enabled` is set (file/environment only, never the Settings page). The
+flow is authorization code with PKCE and a confidential client secret.
+
+- **The provider proves identity; it does not grant access.** A sign-in succeeds only for an
+  identity (issuer + subject) that was linked to an account, or, with `auto_create`, for a
+  verified e-mail address (optionally limited to `allowed_email_domains`). E-mail addresses
+  and usernames are never used to match an existing account, so a provider that lets people
+  choose unverified addresses cannot be used to take one over. Existing accounts are linked
+  by their owner, signed in, from Settings → Sign-in security.
+- **ID token checks:** signature against the provider's published keys (asymmetric
+  algorithms only; `none` and HMAC are refused), issuer, audience and `azp`, expiry,
+  issued-at and the `nonce` of that very sign-in. Keys are cached and re-read once when a
+  token names an unknown key. Discovery must name the configured issuer, and every provider
+  URL must be `https` (plain `http` only to localhost).
+- **Login CSRF:** `state` is single-use, expires after ten minutes and is bound to the
+  browser that started the flow by a `pa_oidc` cookie (HttpOnly, SameSite=Lax, only sent
+  to `/api/auth/oidc`), so a finished flow cannot be pushed into someone else's browser.
+  The normal session cookie stays SameSite=Strict.
+- **Errors:** the provider's own error text is never shown or logged; the person sees a
+  fixed message. The client secret is not in any response, setting view or log.
+- **Accounts created by SSO** have no password (the stored value matches nothing) until the
+  person sets one while signed in; unlinking requires a password so nobody locks
+  themselves out. A disabled account cannot sign in this way. Removing an account removes
+  its identities.
+- **Two-step sign-in** is the provider's job for SSO sign-ins: a local authenticator code
+  is asked for only with a password. If you need a second factor, require it at the
+  provider. `password_login: false` makes SSO the only way in (then the provider is part of
+  your trust boundary and, if it is down, nobody can sign in: keep a way to edit the config).
+- **The Android app** cannot share the browser's cookies, so it starts the same flow with
+  `GET /api/auth/oidc/login?challenge=<S256 hash of a verifier>` in the phone's browser. When
+  the flow succeeds the server redirects to `assistant.client://sso?code=...`: a random,
+  single-use code that lives 60 seconds in memory. The app trades it at
+  `POST /api/auth/oidc/exchange` together with the verifier, which never left the app, and
+  gets a session like a password login. Another app that registered the same URL scheme can
+  read the code but cannot redeem it without the verifier (a wrong verifier also burns the
+  code), and cannot make the app sign in as someone else for the same reason. Failures are
+  redirected to the app with the same fixed messages as in the browser.
+- New outbound destination: the provider's discovery, key and token endpoints, called by the
+  server (not by the browser) with the authorization code and, for token exchange, the client
+  secret.
+
 ## Several users
 
 Everything a user owns carries their id: every table except `users`, `settings`, `messages`

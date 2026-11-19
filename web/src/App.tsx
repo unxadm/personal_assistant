@@ -71,7 +71,7 @@ export default function App() {
     return <p className="p-6 text-sm text-red-400">Cannot reach the server: {error}</p>;
   }
   if (!auth) return null;
-  if (!auth.authenticated) return <Login setup={auth.setup_required} needsSetupCode={auth.setup_code_required} onDone={refresh} />;
+  if (!auth.authenticated) return <Login setup={auth.setup_required} needsSetupCode={auth.setup_code_required} oidc={auth.oidc} onDone={refresh} />;
   if (auth.user?.must_change_password) return <ChangePassword username={auth.user.username} onDone={refresh} />;
   const admin = auth.user?.role === "admin";
   const tabs = TABS.filter((t) => t.id !== "people" || admin);

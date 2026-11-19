@@ -82,14 +82,21 @@ class ShellModel(application: Application) : ScreenModel(application) {
 private val TABS = listOf("chat", "briefing", "inbox", "reminders", "more")
 
 @Composable
-fun AppRoot(requestedTab: String?, onTabShown: () -> Unit) {
+fun AppRoot(
+    requestedTab: String?,
+    onTabShown: () -> Unit,
+    ssoCallback: String? = null,
+    onSsoHandled: () -> Unit = {},
+) {
     val context = LocalContext.current
     val session = (context.applicationContext as App).session
     val signedIn by session.signedIn.collectAsStateWithLifecycle()
     if (!signedIn) {
-        LoginScreen()
+        LoginScreen(ssoCallback = ssoCallback, onSsoHandled = onSsoHandled)
         return
     }
+    // Signed in already: a stray sign-in address (an old link, another app) is not acted on.
+    LaunchedEffect(ssoCallback) { if (ssoCallback != null) onSsoHandled() }
 
     val shell: ShellModel = viewModel()
     val chat: ChatModel = viewModel()

@@ -19,6 +19,21 @@ server:
   cookie_secure: false       # set true when served over HTTPS
   # public_url: https://assistant.example.com   # needed for push (webhooks); OAuth redirect base
 
+# Optional single sign-on through an OpenID Connect provider (Keycloak, Authentik, Google,
+# Microsoft Entra, ...). File/environment only. Register this redirect URI with the provider:
+#   <server.public_url>/api/auth/oidc/callback   (or set auth.oidc.redirect_uri)
+# auth:
+#   oidc:
+#     enabled: true
+#     issuer: https://id.example.com/realms/home   # <issuer>/.well-known/openid-configuration must exist
+#     client_id: assistant
+#     client_secret: ""      # prefer PA_AUTH__OIDC__CLIENT_SECRET in .env; empty for a public client
+#     label: Company login   # text on the sign-in button
+#     password_login: true   # false: SSO only (password sign-in refused)
+#     auto_create: false     # create an account on a first SSO sign-in (needs a verified e-mail)
+#     default_role: member   # role of created accounts
+#     allowed_email_domains: []   # with auto_create: only these domains (empty: any)
+
 llm:
   # Any OpenAI-compatible endpoint. Other slots inherit base_url/api_key from `chat`
   # unless they set their own.

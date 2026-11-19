@@ -70,6 +70,48 @@ class ApiTest {
     }
 
     @Test
+    fun theStatusTellsWhetherSingleSignOnIsOffered() = runBlocking {
+        server.enqueue(json("""{"setup_required":false,"authenticated":false,"oidc":{"enabled":true,"label":"Home login","password_login":false}}"""))
+        server.enqueue(json("""{"setup_required":false,"authenticated":false}"""))
+        val api = Api(MemorySessionStore())
+
+        val on = api.authStatus(base).oidc
+        assertTrue(on.enabled)
+        assertEquals("Home login", on.label)
+        assertFalse(on.passwordLogin)
+        // An older server does not send the key at all.
+        assertFalse(api.authStatus(base).oidc.enabled)
+    }
+
+    @Test
+    fun ssoTradesTheCodeAndVerifierForTheSession() = runBlocking {
+        val session = MemorySessionStore(baseUrl = "https://old.example", cookie = "stale")
+        server.enqueue(
+            json("""{"ok":true,"user":{"id":1,"username":"ann","must_change_password":false}}""")
+                .addHeader("Set-Cookie", "pa_session=fresh; HttpOnly; Path=/"),
+        )
+
+        assertEquals("fresh", Api(session).ssoExchange(base, "the-code", "the-verifier"))
+
+        val request = server.takeRequest()
+        assertEquals("/api/auth/oidc/exchange", request.path)
+        assertNull(request.getHeader("Cookie"))
+        assertEquals("""{"code":"the-code","verifier":"the-verifier"}""", request.body.readUtf8())
+    }
+
+    @Test
+    fun anExpiredSsoCodeIsReportedWithTheServersWords() = runBlocking {
+        server.enqueue(json("""{"detail":"This sign-in expired. Try again."}""", 401))
+        try {
+            Api(MemorySessionStore()).ssoExchange(base, "old", "v")
+            fail("expected a failure")
+        } catch (e: ApiException) {
+            assertEquals(401, e.status)
+            assertEquals("This sign-in expired. Try again.", e.message)
+        }
+    }
+
+    @Test
     fun codeRequiredIsReportedAsIs() = runBlocking {
         server.enqueue(json("""{"detail":"code_required"}""", 401))
         try {

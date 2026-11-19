@@ -282,6 +282,21 @@ changes.
 linked chat an update came from (`Tenants.telegram_owner`) and calls that user's
 `TelegramChannel` handlers. `TelegramChannel` is the per-user sender/status.
 
+**Single sign-on.** `core/oidc.py::OidcService` (a shared service, `c.oidc`) does discovery,
+the PKCE authorization request and ID-token verification (PyJWT, asymmetric algorithms
+only); `api/auth.py` has `/api/auth/oidc/{login,callback,link,unlink}`. In-flight flows are
+kept in memory like the plugin OAuth flows (`state` → verifier, nonce, optional user id for
+linking) and bound to the browser by the `pa_oidc` cookie. `oidc_identities (issuer,
+subject)` links an identity to a user; the callback logs that user in, links the signed-in
+user (link flow), or creates a password-less account when `auto_create` allows.
+
+The Android app cannot share the browser's cookie, so it passes the S256 challenge of a
+secret verifier to `/oidc/login?challenge=`; the callback then redirects to
+`assistant.client://sso?code=` with a single-use, 60-second in-memory code
+(`issue_handoff` / `redeem_handoff`), and the app trades code + verifier at
+`POST /oidc/exchange` for a normal session. The app-side code is `data/Sso.kt` and
+`LoginModel` in `ui/LoginScreen.kt`.
+
 ## Data model
 
 Every table below except `users` and `settings` also has `user_id`
@@ -299,7 +314,8 @@ Built in Phase 1:
 | `memory_facts` | Facts and preferences; `source` is `user` or `agent` |
 | `embeddings` | `(kind, ref_id)` → text, model, dim, float32 vector blob |
 | `settings` | Key/value: server-wide config overrides (secrets encrypted) and per-user keys under `user:<id>:` |
-| `users` | Accounts: username, password hash, role, disabled, must-change-password |
+| `users` | Accounts: username, password hash (`!` = no password, SSO only), role, disabled, must-change-password |
+| `oidc_identities` | Single sign-on identities `(issuer, subject)` linked to a user |
 | `auth_sessions` | SHA-256 of session tokens with expiry |
 
 **Vectors.** Embeddings are stored as blobs in an ordinary table and ranked with

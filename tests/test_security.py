@@ -65,9 +65,8 @@ async def test_two_step_sign_in(client, app, clock):
     assert (await client.get("/api/auth/security")).json()["totp_enabled"] is False
     r = await client.post("/api/auth/totp/enable", json={"code": totp.code_at(secret, clock())})
     recovery = r.json()["recovery_codes"]
-    assert (await client.get("/api/auth/security")).json() == {
-        "totp_enabled": True, "recovery_codes_left": 8, "sessions": 1,
-    }
+    info = (await client.get("/api/auth/security")).json()
+    assert (info["totp_enabled"], info["recovery_codes_left"], info["sessions"]) == (True, 8, 1)
     # Other devices were signed out; this one stays in.
     assert (await other.get("/api/conversations")).status_code == 401
     assert (await client.get("/api/conversations")).status_code == 200
