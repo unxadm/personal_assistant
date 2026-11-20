@@ -1,0 +1,39 @@
+name: actual_budget
+version: 0.1.0
+description: >-
+  Read your Actual Budget (accounts, balances, this month's budget, transactions) and, if you
+  allow it, add transactions. Runs the official @actual-app/api through Node: see README.md.
+entrypoint: plugin:ActualBudgetPlugin
+capabilities: [data_source, tools]
+sync_interval: 21600
+permissions:
+  data_write: [item, transaction]
+secrets: [password]
+optional_secrets: [file_password]
+config_schema:
+  type: object
+  additionalProperties: false
+  required: [server_url, budget_id]
+  properties:
+    server_url:
+      type: string
+      title: Actual server address
+      description: "e.g. https://actual.example.com or http://192.168.1.20:5006"
+    budget_id:
+      type: string
+      title: Budget sync id
+      description: "In Actual: Settings → Show advanced settings → Sync ID"
+    currency_symbol:
+      type: string
+      title: Currency symbol
+      default: "$"
+    sync_transactions_days:
+      type: integer
+      title: Days of transactions to keep searchable (0 = none)
+      default: 60
+      minimum: 0
+      maximum: 365
+    enable_writes:
+      type: boolean
+      title: Let the assistant add transactions
+      default: false

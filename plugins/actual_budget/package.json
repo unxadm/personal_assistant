@@ -1,0 +1,11 @@
+{
+  "name": "assistant-actual-budget-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node side of the actual_budget plugin: runs one @actual-app/api operation per process.",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@actual-app/api": "^26.11.0"
+  }
+}
